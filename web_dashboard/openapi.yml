@@ -1,0 +1,125 @@
+openapi: 3.0.3
+info:
+  title: NeuroLens AI — Prediction API
+  version: '1.0.0'
+  description: API for MRI upload, prediction, metrics and report generation.
+servers:
+  - url: /api
+
+paths:
+  /predict:
+    post:
+      summary: Upload MRI and run prediction
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                patient_id:
+                  type: string
+                model:
+                  type: string
+                  enum: [cnn, vit, cnn+vit]
+      responses:
+        '200':
+          description: Prediction result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionResponse'
+
+  /metrics:
+    get:
+      summary: Get model training/eval metrics
+      parameters:
+        - in: query
+          name: model
+          schema:
+            type: string
+          required: true
+      responses:
+        '200':
+          description: Metrics payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsResponse'
+
+  /report:
+    post:
+      summary: Generate and return PDF report
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                patient_id:
+                  type: string
+                job_id:
+                  type: string
+                include_charts:
+                  type: boolean
+      responses:
+        '200':
+          description: Report generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  report_url:
+                    type: string
+
+components:
+  schemas:
+    PredictionResponse:
+      type: object
+      properties:
+        tumor_status:
+          type: string
+          enum: [tumor, no_tumor]
+        tumor_type:
+          type: string
+        confidence:
+          type: number
+          format: float
+        processing_time_ms:
+          type: integer
+        heatmap_base64:
+          type: string
+        attention_map_base64:
+          type: string
+        slices:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              thumbnail_base64:
+                type: string
+        job_id:
+          type: string
+
+    MetricsResponse:
+      type: object
+      properties:
+        accuracy:
+          type: number
+        loss:
+          type: number
+        roc:
+          type: object
+        confusion_matrix:
+          type: array
+          items:
+            type: array
+            items:
+              type: integer

@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>NeuroLens AI — Mockup</title>
+    <style>
+      :root{
+        --bg:#0B1020; --card:#141B2D; --primary:#00D1FF; --text:#EAF2FF; --success:#00E676; --danger:#FF5252;
+      }
+      body{margin:0;font-family:Inter,Arial;background:var(--bg);color:var(--text)}
+      .container{max-width:1100px;margin:24px auto;padding:16px}
+      .topnav{display:flex;align-items:center;gap:12px}
+      .logo{font-weight:700;color:var(--primary)}
+      .card{background:var(--card);border-radius:8px;padding:12px}
+      .row{display:flex;gap:12px}
+      .prediction-cards{display:flex;gap:12px;margin:12px 0}
+      .pred{flex:1;padding:12px;border-radius:8px}
+      .viewer{flex:2;height:360px;display:flex;flex-direction:column}
+      .sidebar{flex:1}
+      .muted{opacity:0.8;font-size:13px}
+      .btn{background:var(--primary);color:#021; padding:8px 12px;border-radius:6px;border:none}
+      img.sample{width:100%;height:260px;object-fit:cover;border-radius:6px}
+    </style>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script>
+      const e = React.createElement;
+
+      function TopNav(){
+        return e('div',{className:'topnav'},
+          e('div',{className:'logo'},'NeuroLens AI'),
+          e('div',{style:{flex:1}}),
+          e('button',{className:'btn'},'Theme')
+        )
+      }
+
+      function PredictionCard({title,value,meta}){
+        return e('div',{className:'card pred'},
+          e('div',null,e('strong',null,title)),
+          e('div',null, e('h3',null,value)),
+          meta && e('div',{className:'muted'},meta)
+        )
+      }
+
+      function Viewer(){
+        return e('div',{className:'card viewer'},
+          e('div',null,e('img',{className:'sample',src:'https://via.placeholder.com/600x260.png?text=MRI+Slice'})),
+          e('div',{style:{marginTop:8,display:'flex',justifyContent:'space-between'}},
+            e('div',{className:'muted'},'Slice 12 / 24'),
+            e('div',null,e('button',{className:'btn'},'Toggle Grad-CAM'))
+          )
+        )
+      }
+
+      function Analytics(){
+        return e('div',{className:'card'},
+          e('strong',null,'Model Analytics'),
+          e('div',{className:'muted',style:{marginTop:6}},'Accuracy: 0.94 | Loss: 0.18')
+        )
+      }
+
+      function App(){
+        return e('div',{className:'container'},
+          e(TopNav),
+          e('div',{style:{display:'flex',marginTop:12,gap:12}},
+            e('div',{style:{flex:1}},
+              e('div',{className:'card'},
+                e('strong',null,'Upload Scan'),
+                e('div',{style:{marginTop:8}}, e('input',{type:'file'})),
+                e('div',{style:{marginTop:8}}, e('button',{className:'btn'},'Run Analysis'))
+              ),
+              e('div',{style:{height:12}}),
+              e(Analytics)
+            ),
+            e('div',{style:{flex:2}},
+              e('div',{className:'prediction-cards'},
+                e(PredictionCard,{title:'Tumor Status',value:'Tumor',meta:'High confidence'}),
+                e(PredictionCard,{title:'Tumor Type',value:'Glioma',meta:'Top-3: Glioma (92%), Meningioma (6%)'}),
+                e(PredictionCard,{title:'Confidence',value:'92%',meta:'Live bar'}),
+                e(PredictionCard,{title:'Processing Time',value:'1.34s',meta:'Job #abc123'})
+              ),
+              e(Viewer)
+            ),
+            e('div',{style:{flex:1}},
+              e('div',{className:'card'},e('strong',null,'Patient Info'), e('div',{className:'muted'},'Name: John Doe')),
+              e('div',{style:{height:12}}),
+              e('div',{className:'card'},e('strong',null,'Activity'), e('div',{className:'muted'},'Last run: 10m ago'))
+            )
+          ),
+          e('div',{style:{marginTop:16,textAlign:'center',opacity:0.7}},'Footer — model v1.0 | TensorFlow')
+        )
+      }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(e(App))
+    </script>
+  </body>
+</html>

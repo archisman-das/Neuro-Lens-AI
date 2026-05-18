@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NeuroLens AI</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <nav class="topbar" aria-label="Primary navigation">
+        <a class="brand" href="#" aria-label="NeuroLens AI home">
+          <span class="brand-mark">N</span>
+          <span>
+            <strong>NeuroLens AI</strong>
+            <small>MRI decision support</small>
+          </span>
+        </a>
+        <label class="patient-search" aria-label="Search patient">
+          <span>⌕</span>
+          <input type="search" placeholder="Search patient, scan ID, report" />
+        </label>
+        <div class="top-actions">
+          <button class="icon-button" type="button" aria-label="Notifications">!</button>
+          <button class="icon-button" type="button" aria-label="Toggle theme">◐</button>
+        </div>
+      </nav>
+
+      <div class="layout-grid">
+
+        <main id="dashboard" class="content">
+          <section class="hero">
+              <div id="upload" class="hero-copy">
+                <p class="eyebrow">CNN + Vision Transformer pipeline</p>
+              <h1>AI-Powered Brain Tumor Detection Using CNN and Vision Transformer</h1>
+              <p>Fast, accurate and explainable MRI analysis for medical assistance.</p>
+            </div>
+            <div class="upload-console">
+              <div class="section-title">
+                <span>Upload MRI</span>
+                <small id="fileName">No scan selected</small>
+              </div>
+              <div class="flow-strip" aria-label="Analysis flow">
+                <span>Upload</span>
+                <span>Preprocess</span>
+                <span>CNN</span>
+                <span>ViT</span>
+                <span>Predict</span>
+                <span>Report</span>
+              </div>
+              <label for="modelSelect">Model</label>
+              <select id="modelSelect">
+                <option value="all">Comparative result analysis</option>
+                <option value="cnn">CNN</option>
+                <option value="transfer">Transfer Learning</option>
+                <option value="vit">Vision Transformer</option>
+              </select>
+              <label for="imageInput">MRI scan</label>
+              <input id="imageInput" type="file" accept="image/png,image/jpeg" />
+              <button id="predictButton" class="primary-button" type="button">
+                Run Analysis
+              </button>
+              <div id="uploadState" class="scan-status">Select an MRI image to begin.</div>
+            </div>
+          </section>
+
+          <section id="predictions" class="prediction-cards" aria-label="Prediction result cards">
+            <article class="stat-card danger">
+              <small>Tumor Status</small>
+              <strong id="statusCard">Pending</strong>
+              <span>Live inference result</span>
+            </article>
+            <article class="stat-card warning">
+              <small>Tumor Type</small>
+              <strong id="typeCard">Unknown</strong>
+              <span>Binary model output</span>
+            </article>
+            <article class="stat-card success">
+              <small>Confidence Score</small>
+              <strong id="confidenceCard">0.000</strong>
+              <span>Best available prediction</span>
+            </article>
+            <article class="stat-card primary">
+              <small>Processing Time</small>
+              <strong id="timeCard">--</strong>
+              <span>Local model API</span>
+            </article>
+          </section>
+
+          <section class="main-grid">
+            <section class="visual-panel">
+                <div class="section-title">
+                  <span>MRI Visualization</span>
+                  <small>Original image viewer</small>
+                </div>
+                <div class="viewer-toolbar" aria-label="Viewer controls">
+                  <button class="tool-button active" data-view="original" type="button">Original</button>
+                  <label>
+                    Zoom
+                    <input id="zoomRange" type="range" min="1" max="1.8" value="1" step="0.1" />
+                  </label>
+                  <label>
+                    Slice
+                    <input id="sliceRange" type="range" min="1" max="12" value="6" />
+                  </label>
+                </div>
+                <div id="imageFrame" class="image-frame">
+                  <img id="previewImage" src="" alt="" />
+                  <div id="scannerLine" class="scanner-line"></div>
+                  <div id="emptyPreview">MRI image viewer</div>
+                </div>
+            </section>
+
+            <section class="result-panel">
+              <div class="section-title">
+                <span>Prediction Results</span>
+                <small id="thinkingState">Idle</small>
+              </div>
+              <div class="ai-thinking" aria-hidden="true">
+                <span></span><span></span><span></span>
+              </div>
+              <div id="predictionResult" class="result-grid">
+                <div class="empty-state">Run a scan to compare CNN, Transfer Learning, and Vision Transformer outputs.</div>
+              </div>
+            </section>
+          </section>
+
+            <section id="analytics" class="analytics-grid">
+            <section class="analytics-panel" id="modelAnalyticsPanel">
+              <div id="modelPerformance" class="section-title">
+                <span>Model Analytics</span>
+                <small>Individual model performance metrics</small>
+              </div>
+              <div class="metric-summary" id="metricsSummary"></div>
+              <div class="chart-row">
+                <div class="bar-chart" id="accuracyChart" aria-label="Accuracy chart"></div>
+              </div>
+              <div class="table-wrap">
+                <table id="metricsTable">
+                  <thead>
+                      <tr>
+                      <th>Model</th>
+                      <th>Accuracy</th>
+                      <th>Precision</th>
+                      <th>Recall</th>
+                      <th>F1</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <div id="modelVisuals" class="model-visuals" style="display:flex;gap:12px;margin-top:24px;flex-wrap:wrap;"></div>
+            </section>
+
+            <section class="analytics-panel" id="comparativeAnalyticsPanel">
+              <div class="section-title">
+                <span>Comparative Model Study</span>
+                <small>Cross-model performance comparison</small>
+              </div>
+              <div class="comparative-controls">
+                <p style="color: var(--muted); font-size: 13px; margin: 0 0 12px; line-height: 1.5;">
+                  Compare how CNN, Transfer Learning, and Vision Transformer models perform on the same MRI scan. 
+                  Upload an image above and click "Run Analysis" to see comparative predictions here.
+                </p>
+                <button id="runComparisonBtn" class="primary-button" type="button">
+                  Run Comparative Analysis
+                </button>
+              </div>
+              <div id="comparisonLoading" class="comparison-loading" style="display: none;">
+                <div class="ai-thinking"><span></span><span></span><span></span></div>
+                <span>Running comparative analysis across CNN, Transfer Learning, and ViT models...</span>
+              </div>
+              <div id="comparisonResults" class="comparison-results">
+                <div class="empty-state">Upload an MRI scan and run analysis to see how different models compare on the same image.</div>
+              </div>
+            </section>
+
+            <aside id="patientReports" class="patient-panel">
+              <div class="section-title">
+                <span>Patient Information</span>
+                <small>Report generation</small>
+              </div>
+              <div class="patient-fields">
+                <label>Patient ID<input id="patientId" value="NL-2048" /></label>
+                <label>Age<input value="46" /></label>
+                <label>Scan Type<input value="Brain MRI" /></label>
+              </div>
+              <button id="reportButton" class="secondary-button" type="button">Generate Report</button>
+              <div id="reportState" class="report-state">Report waits for prediction output.</div>
+              <div class="brain-scene" aria-label="3D brain visualization">
+                <div class="brain-core"></div>
+              </div>
+            </aside>
+          </section>
+
+          <section class="timeline-section">
+            <div class="section-title">
+              <span>Activity Timeline</span>
+              <small>Recent scans and actions</small>
+            </div>
+            <div id="activityTimeline" class="timeline">
+              <article><b>System ready</b><span>Model artifacts loaded from local workspace.</span></article>
+              <article><b>Corrected comparison</b><span>Transfer and Vision Transformer ranked above CNN.</span></article>
+              <article><b>Awaiting MRI upload</b><span>Prediction workflow is ready.</span></article>
+            </div>
+          </section>
+
+          <footer class="footer">
+            <span>Model version: NeuroLens AI local build</span>
+            <span>TensorFlow backend · CNN · Transfer Learning · Vision Transformer</span>
+          </footer>
+        </main>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

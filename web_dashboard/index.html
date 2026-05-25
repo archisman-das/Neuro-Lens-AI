@@ -1,220 +1,785 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NeuroLens AI</title>
-    <link rel="stylesheet" href="style.css" />
-  </head>
-  <body>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NeuroLens AI - Advanced Brain Tumor Detection</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
     <div class="app-shell">
-      <nav class="topbar" aria-label="Primary navigation">
-        <a class="brand" href="#" aria-label="NeuroLens AI home">
-          <span class="brand-mark">N</span>
-          <span>
-            <strong>NeuroLens AI</strong>
-            <small>MRI decision support</small>
-          </span>
-        </a>
-        <label class="patient-search" aria-label="Search patient">
-          <span>⌕</span>
-          <input type="search" placeholder="Search patient, scan ID, report" />
-        </label>
-        <div class="top-actions">
-          <button class="icon-button" type="button" aria-label="Notifications">!</button>
-          <button class="icon-button" type="button" aria-label="Toggle theme">◐</button>
-        </div>
-      </nav>
-
-      <div class="layout-grid">
-
-        <main id="dashboard" class="content">
-          <section class="hero">
-              <div id="upload" class="hero-copy">
-                <p class="eyebrow">CNN + Vision Transformer pipeline</p>
-              <h1>AI-Powered Brain Tumor Detection Using CNN and Vision Transformer</h1>
-              <p>Fast, accurate and explainable MRI analysis for medical assistance.</p>
-            </div>
-            <div class="upload-console">
-              <div class="section-title">
-                <span>Upload MRI</span>
-                <small id="fileName">No scan selected</small>
-              </div>
-              <div class="flow-strip" aria-label="Analysis flow">
-                <span>Upload</span>
-                <span>Preprocess</span>
-                <span>CNN</span>
-                <span>ViT</span>
-                <span>Predict</span>
-                <span>Report</span>
-              </div>
-              <label for="modelSelect">Model</label>
-              <select id="modelSelect">
-                <option value="all">Comparative result analysis</option>
-                <option value="cnn">CNN</option>
-                <option value="transfer">Transfer Learning</option>
-                <option value="vit">Vision Transformer</option>
-              </select>
-              <label for="imageInput">MRI scan</label>
-              <input id="imageInput" type="file" accept="image/png,image/jpeg" />
-              <button id="predictButton" class="primary-button" type="button">
-                Run Analysis
-              </button>
-              <div id="uploadState" class="scan-status">Select an MRI image to begin.</div>
-            </div>
-          </section>
-
-          <section id="predictions" class="prediction-cards" aria-label="Prediction result cards">
-            <article class="stat-card danger">
-              <small>Tumor Status</small>
-              <strong id="statusCard">Pending</strong>
-              <span>Live inference result</span>
-            </article>
-            <article class="stat-card warning">
-              <small>Tumor Type</small>
-              <strong id="typeCard">Unknown</strong>
-              <span>Binary model output</span>
-            </article>
-            <article class="stat-card success">
-              <small>Confidence Score</small>
-              <strong id="confidenceCard">0.000</strong>
-              <span>Best available prediction</span>
-            </article>
-            <article class="stat-card primary">
-              <small>Processing Time</small>
-              <strong id="timeCard">--</strong>
-              <span>Local model API</span>
-            </article>
-          </section>
-
-          <section class="main-grid">
-            <section class="visual-panel">
-                <div class="section-title">
-                  <span>MRI Visualization</span>
-                  <small>Original image viewer</small>
+        <!-- Top Navigation Bar -->
+        <nav class="topbar" aria-label="Primary navigation">
+            <a class="brand" href="#" aria-label="NeuroLens AI home">
+                <div class="brand-logo">
+                    <svg viewBox="0 0 40 40" class="logo-icon">
+                        <circle cx="20" cy="20" r="18" fill="none" stroke="currentColor" stroke-width="2"/>
+                        <path d="M12 20 Q20 10 28 20 Q20 30 12 20" fill="currentColor" opacity="0.6"/>
+                        <circle cx="20" cy="20" r="4" fill="currentColor"/>
+                    </svg>
                 </div>
-                <div class="viewer-toolbar" aria-label="Viewer controls">
-                  <button class="tool-button active" data-view="original" type="button">Original</button>
-                  <label>
-                    Zoom
-                    <input id="zoomRange" type="range" min="1" max="1.8" value="1" step="0.1" />
-                  </label>
-                  <label>
-                    Slice
-                    <input id="sliceRange" type="range" min="1" max="12" value="6" />
-                  </label>
+                <div class="brand-text">
+                    <strong>NeuroLens AI</strong>
+                    <small>Advanced MRI Analysis Platform</small>
                 </div>
-                <div id="imageFrame" class="image-frame">
-                  <img id="previewImage" src="" alt="" />
-                  <div id="scannerLine" class="scanner-line"></div>
-                  <div id="emptyPreview">MRI image viewer</div>
+            </a>
+            
+            <div class="nav-search">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="M21 21l-4.35-4.35"/>
+                </svg>
+                <input type="search" placeholder="Search patient, scan ID, or report..." aria-label="Search">
+            </div>
+            
+        </nav>
+
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-section">
+                <h3 class="sidebar-title">Analysis Tools</h3>
+                <nav class="sidebar-nav">
+                    <a href="#" class="nav-item active" data-tab="upload">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        <span>Upload & Analyze</span>
+                    </a>
+                    <a href="#" class="nav-item" data-tab="segmentation">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                            <line x1="3" y1="9" x2="21" y2="9"/>
+                            <line x1="9" y1="21" x2="9" y2="9"/>
+                        </svg>
+                        <span>Segmentation</span>
+                    </a>
+                    <a href="#" class="nav-item" data-tab="models">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                            <path d="M2 17l10 5 10-5"/>
+                            <path d="M2 12l10 5 10-5"/>
+                        </svg>
+                        <span>Model Comparison</span>
+                    </a>
+                    <a href="#" class="nav-item" data-tab="reports">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                            <polyline points="10 9 9 9 8 9"/>
+                        </svg>
+                        <span>Reports</span>
+                    </a>
+                </nav>
+            </div>
+
+            <div class="sidebar-section">
+                <h3 class="sidebar-title">Recent Scans</h3>
+                <div class="recent-list">
+                    <div class="recent-item">
+                        <div class="recent-icon tumor">T</div>
+                        <div class="recent-info">
+                            <span class="recent-id">SCAN-2024-0847</span>
+                            <span class="recent-time">2 hours ago</span>
+                        </div>
+                        <span class="recent-status positive">Tumor</span>
+                    </div>
+                    <div class="recent-item">
+                        <div class="recent-icon normal">N</div>
+                        <div class="recent-info">
+                            <span class="recent-id">SCAN-2024-0846</span>
+                            <span class="recent-time">5 hours ago</span>
+                        </div>
+                        <span class="recent-status negative">Normal</span>
+                    </div>
+                    <div class="recent-item">
+                        <div class="recent-icon tumor">T</div>
+                        <div class="recent-info">
+                            <span class="recent-id">SCAN-2024-0845</span>
+                            <span class="recent-time">Yesterday</span>
+                        </div>
+                        <span class="recent-status positive">Tumor</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h3 class="sidebar-title">System Status</h3>
+                <div class="system-status">
+                    <div class="status-item">
+                        <span class="status-dot online"></span>
+                        <span>Models Loaded</span>
+                        <span class="status-value">3/3</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-dot online"></span>
+                        <span>GPU Memory</span>
+                        <span class="status-value">4.2/8 GB</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-dot warning"></span>
+                        <span>Queue</span>
+                        <span class="status-value">2 pending</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Upload Section -->
+            <section id="upload-section" class="content-section active">
+                <div class="section-header">
+                    <div>
+                        <h1>Brain Tumor Detection</h1>
+                        <p class="section-subtitle">Upload MRI scans for AI-powered analysis using CNN, Transfer Learning, and Vision Transformer models</p>
+                    </div>
+                    <div class="header-actions">
+                        <button class="btn btn-outline" id="batchUploadBtn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="3" y="3" width="7" height="7"/>
+                                <rect x="14" y="3" width="7" height="7"/>
+                                <rect x="14" y="14" width="7" height="7"/>
+                                <rect x="3" y="14" width="7" height="7"/>
+                            </svg>
+                            Batch Upload
+                        </button>
+                    </div>
+                </div>
+
+                <div class="upload-grid">
+                    <!-- Upload Card -->
+                    <div class="upload-card">
+                        <div class="upload-zone" id="uploadZone">
+                            <div class="upload-icon">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="17 8 12 3 7 8"/>
+                                    <line x1="12" y1="3" x2="12" y2="15"/>
+                                </svg>
+                            </div>
+                            <h3>Drop MRI Scan Here</h3>
+                            <p>or click to browse files</p>
+                            <span class="file-types">Supports: DICOM, NIfTI, PNG, JPEG (Max 50MB)</span>
+                            <input type="file" id="fileInput" accept=".dcm,.nii,.png,.jpg,.jpeg" hidden>
+                        </div>
+                        
+                        <div class="upload-options">
+                            <div class="option-group">
+                                <label>Analysis Model</label>
+                                <select id="modelSelect" class="select-input">
+                                    <option value="all">Comparative Analysis (All Models)</option>
+                                    <option value="cnn">CNN (Fast)</option>
+                                    <option value="transfer">Transfer Learning (Balanced)</option>
+                                    <option value="vit">Vision Transformer (Accurate)</option>
+                                    <option value="attention_unet">Attention U-Net (Segmentation)</option>
+                                </select>
+                            </div>
+                            
+                            <div class="option-group">
+                                <label>Patient ID (Optional)</label>
+                                <input type="text" id="patientId" class="text-input" placeholder="e.g., PT-2024-001">
+                            </div>
+                        </div>
+
+                        <button class="btn btn-primary btn-large" id="analyzeBtn" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polygon points="5 3 19 12 5 21 5 3"/>
+                            </svg>
+                            Run Analysis
+                        </button>
+                    </div>
+
+                    <!-- Preview Card -->
+                    <div class="preview-card">
+                        <div class="preview-header">
+                            <h3>Scan Preview</h3>
+                            <div class="preview-controls">
+                                <button class="control-btn" title="Zoom In">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="11" cy="11" r="8"/>
+                                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                        <line x1="11" y1="8" x2="11" y2="14"/>
+                                        <line x1="8" y1="11" x2="14" y2="11"/>
+                                    </svg>
+                                </button>
+                                <button class="control-btn" title="Zoom Out">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="11" cy="11" r="8"/>
+                                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                                        <line x1="8" y1="11" x2="14" y2="11"/>
+                                    </svg>
+                                </button>
+                                <button class="control-btn" title="Reset View">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                                        <path d="M3 3v5h5"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="preview-container" id="previewContainer">
+                            <div class="preview-placeholder">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                                    <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/>
+                                    <line x1="7" y1="2" x2="7" y2="22"/>
+                                    <line x1="17" y1="2" x2="17" y2="22"/>
+                                    <line x1="2" y1="12" x2="22" y2="12"/>
+                                    <line x1="2" y1="7" x2="7" y2="7"/>
+                                    <line x1="2" y1="17" x2="7" y2="17"/>
+                                    <line x1="17" y1="17" x2="22" y2="17"/>
+                                    <line x1="17" y1="7" x2="22" y2="7"/>
+                                </svg>
+                                <span>MRI scan preview will appear here</span>
+                            </div>
+                            <img id="previewImage" src="" alt="MRI Preview" style="display: none;">
+                        </div>
+                        <div class="preview-info">
+                            <div class="info-item">
+                                <span class="info-label">File Name</span>
+                                <span class="info-value" id="fileName">--</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">Dimensions</span>
+                                <span class="info-value" id="dimensions">--</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">File Size</span>
+                                <span class="info-value" id="fileSize">--</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </section>
 
-            <section class="result-panel">
-              <div class="section-title">
-                <span>Prediction Results</span>
-                <small id="thinkingState">Idle</small>
-              </div>
-              <div class="ai-thinking" aria-hidden="true">
-                <span></span><span></span><span></span>
-              </div>
-              <div id="predictionResult" class="result-grid">
-                <div class="empty-state">Run a scan to compare CNN, Transfer Learning, and Vision Transformer outputs.</div>
-              </div>
+            <!-- Results Section -->
+            <section id="results-section" class="content-section" style="display: none;">
+                <div class="section-header">
+                    <div>
+                        <h1>Analysis Results</h1>
+                        <p class="section-subtitle" id="resultsSubtitle">Scan: SCAN-2024-0848 · Analyzed at 2:30 PM</p>
+                    </div>
+                    <div class="header-actions">
+                        <button class="btn btn-outline" id="exportBtn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/>
+                                <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                            Export Report
+                        </button>
+                        <button class="btn btn-primary" id="newAnalysisBtn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                            New Analysis
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Key Metrics -->
+                <div class="metrics-grid">
+                    <div class="metric-card critical" id="diagnosisCard">
+                        <div class="metric-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                                <line x1="12" y1="9" x2="12" y2="13"/>
+                                <line x1="12" y1="17" x2="12.01" y2="17"/>
+                            </svg>
+                        </div>
+                        <div class="metric-content">
+                            <span class="metric-label">Diagnosis</span>
+                            <span class="metric-value" id="diagnosisValue">Analyzing...</span>
+                            <span class="metric-detail" id="diagnosisDetail">AI model processing</span>
+                        </div>
+                    </div>
+
+                    <div class="metric-card warning" id="confidenceCard">
+                        <div class="metric-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                            </svg>
+                        </div>
+                        <div class="metric-content">
+                            <span class="metric-label">Confidence</span>
+                            <span class="metric-value" id="confidenceValue">--</span>
+                            <div class="confidence-bar">
+                                <div class="confidence-fill" id="confidenceFill"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="metric-card info" id="modelCard">
+                        <div class="metric-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <path d="M12 16v-4"/>
+                                <path d="M12 8h.01"/>
+                            </svg>
+                        </div>
+                        <div class="metric-content">
+                            <span class="metric-label">Best Model</span>
+                            <span class="metric-value" id="modelValue">--</span>
+                            <span class="metric-detail" id="modelDetail">Based on accuracy</span>
+                        </div>
+                    </div>
+
+                    <div class="metric-card success" id="timeCard">
+                        <div class="metric-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <polyline points="12 6 12 12 16 14"/>
+                            </svg>
+                        </div>
+                        <div class="metric-content">
+                            <span class="metric-label">Processing Time</span>
+                            <span class="metric-value" id="timeValue">--</span>
+                            <span class="metric-detail">GPU Accelerated</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detailed Results -->
+                <div class="results-grid">
+                    <!-- Model Comparison -->
+                    <div class="results-panel">
+                        <div class="panel-header">
+                            <h3>Model Performance Comparison</h3>
+                            <div class="panel-tabs">
+                                <button class="tab-btn active" data-tab="comparison">Comparison</button>
+                                <button class="tab-btn" data-tab="details">Details</button>
+                            </div>
+                        </div>
+                        <div class="panel-content" id="comparisonContent">
+                            <div class="comparison-table">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Model</th>
+                                            <th>Prediction</th>
+                                            <th>Confidence</th>
+                                            <th>Accuracy</th>
+                                            <th>ROC AUC</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="comparisonTableBody">
+                                        <!-- Populated by JavaScript -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Visualization -->
+                    <div class="results-panel">
+                        <div class="panel-header">
+                            <h3>Visualization</h3>
+                            <div class="viz-tabs">
+                                <button class="tab-btn active" data-view="original">Original</button>
+                                <button class="tab-btn" data-view="heatmap">Heatmap</button>
+                                <button class="tab-btn" data-view="overlay">Overlay</button>
+                            </div>
+                        </div>
+                        <div class="panel-content">
+                            <div class="viz-container" id="vizContainer">
+                                <img id="vizImage" src="" alt="Visualization">
+                                <img id="heatmapImage" src="" alt="Heatmap" style="display: none;">
+                                <img id="overlayImage" src="" alt="Overlay" style="display: none;">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Additional Analysis -->
+                <div class="additional-analysis">
+                    <div class="analysis-card">
+                        <h4>Uncertainty Analysis</h4>
+                        <div class="uncertainty-stats">
+                            <div class="uncertainty-item">
+                                <span class="uncertainty-label">Epistemic</span>
+                                <span class="uncertainty-value" id="epistemicValue">--</span>
+                            </div>
+                            <div class="uncertainty-item">
+                                <span class="uncertainty-label">Aleatoric</span>
+                                <span class="uncertainty-value" id="aleatoricValue">--</span>
+                            </div>
+                        </div>
+                        <div class="uncertainty-bar">
+                            <div class="uncertainty-fill" id="uncertaintyFill"></div>
+                        </div>
+                        <span class="uncertainty-note" id="uncertaintyNote">Low uncertainty - High reliability</span>
+                    </div>
+
+                    <div class="analysis-card">
+                        <h4>Robustness Score</h4>
+                        <div class="robustness-gauge">
+                            <div class="gauge-circle" id="robustnessGauge">
+                                <span class="gauge-value" id="robustnessValue">--</span>
+                            </div>
+                        </div>
+                        <span class="robustness-note" id="robustnessNote">Model confidence under perturbation</span>
+                    </div>
+                </div>
             </section>
-          </section>
 
-            <section id="analytics" class="analytics-grid">
-            <section class="analytics-panel" id="modelAnalyticsPanel">
-              <div id="modelPerformance" class="section-title">
-                <span>Model Analytics</span>
-                <small>Individual model performance metrics</small>
-              </div>
-              <div class="metric-summary" id="metricsSummary"></div>
-              <div class="chart-row">
-                <div class="bar-chart" id="accuracyChart" aria-label="Accuracy chart"></div>
-              </div>
-              <div class="table-wrap">
-                <table id="metricsTable">
-                  <thead>
-                      <tr>
-                      <th>Model</th>
-                      <th>Accuracy</th>
-                      <th>Precision</th>
-                      <th>Recall</th>
-                      <th>F1</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-              <div id="modelVisuals" class="model-visuals" style="display:flex;gap:12px;margin-top:24px;flex-wrap:wrap;"></div>
+            <!-- Segmentation Section -->
+            <section id="segmentation-section" class="content-section" style="display: none;">
+                <div class="section-header">
+                    <div>
+                        <h1>Tumor Segmentation</h1>
+                        <p class="section-subtitle">Pixel-level tumor boundary detection using Attention U-Net</p>
+                    </div>
+                </div>
+
+                <div class="segmentation-workspace">
+                    <div class="seg-controls">
+                        <div class="control-group">
+                            <label>Segmentation Model</label>
+                            <select id="segModelSelect" class="select-input">
+                                <option value="attention_unet">Attention U-Net</option>
+                                <option value="unet">Standard U-Net</option>
+                                <option value="res_unet">Residual U-Net</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label>Threshold</label>
+                            <input type="range" id="thresholdSlider" min="0" max="100" value="50">
+                            <span id="thresholdValue">0.50</span>
+                        </div>
+                        <button class="btn btn-primary" id="runSegmentationBtn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polygon points="5 3 19 12 5 21 5 3"/>
+                            </svg>
+                            Run Segmentation
+                        </button>
+                    </div>
+
+                    <div class="seg-viewers">
+                        <div class="seg-viewer">
+                            <h4>Original MRI</h4>
+                            <div class="viewer" id="segOriginal"></div>
+                        </div>
+                        <div class="seg-viewer">
+                            <h4>Segmentation Mask</h4>
+                            <div class="viewer" id="segMask"></div>
+                        </div>
+                        <div class="seg-viewer">
+                            <h4>Overlay</h4>
+                            <div class="viewer" id="segOverlay"></div>
+                        </div>
+                    </div>
+
+                    <div class="seg-metrics">
+                        <div class="seg-metric">
+                            <span class="metric-label">Dice Score</span>
+                            <span class="metric-value" id="diceScore">--</span>
+                        </div>
+                        <div class="seg-metric">
+                            <span class="metric-label">IoU</span>
+                            <span class="metric-value" id="iouScore">--</span>
+                        </div>
+                        <div class="seg-metric">
+                            <span class="metric-label">Tumor Area</span>
+                            <span class="metric-value" id="tumorArea">--</span>
+                        </div>
+                    </div>
+                </div>
             </section>
 
-            <section class="analytics-panel" id="comparativeAnalyticsPanel">
-              <div class="section-title">
-                <span>Comparative Model Study</span>
-                <small>Cross-model performance comparison</small>
-              </div>
-              <div class="comparative-controls">
-                <p style="color: var(--muted); font-size: 13px; margin: 0 0 12px; line-height: 1.5;">
-                  Compare how CNN, Transfer Learning, and Vision Transformer models perform on the same MRI scan. 
-                  Upload an image above and click "Run Analysis" to see comparative predictions here.
-                </p>
-                <button id="runComparisonBtn" class="primary-button" type="button">
-                  Run Comparative Analysis
-                </button>
-              </div>
-              <div id="comparisonLoading" class="comparison-loading" style="display: none;">
-                <div class="ai-thinking"><span></span><span></span><span></span></div>
-                <span>Running comparative analysis across CNN, Transfer Learning, and ViT models...</span>
-              </div>
-              <div id="comparisonResults" class="comparison-results">
-                <div class="empty-state">Upload an MRI scan and run analysis to see how different models compare on the same image.</div>
-              </div>
+            <!-- Model Comparison Section -->
+            <section id="models-section" class="content-section" style="display: none;">
+                <div class="section-header">
+                    <div>
+                        <h1>Model Performance Comparison</h1>
+                        <p class="section-subtitle">Compare accuracy, speed, and performance metrics across all AI models</p>
+                    </div>
+                </div>
+
+                <div class="model-comparison-grid">
+                    <div class="model-card">
+                        <div class="model-header">
+                            <h3>CNN (Fast)</h3>
+                            <span class="model-badge speed">Fast</span>
+                        </div>
+                        <div class="model-stats">
+                            <div class="stat-row">
+                                <span class="stat-label">Accuracy</span>
+                                <span class="stat-value">85-90%</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Inference Time</span>
+                                <span class="stat-value">~0.5s</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Parameters</span>
+                                <span class="stat-value">2.3M</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">ROC AUC</span>
+                                <span class="stat-value">0.87-0.92</span>
+                            </div>
+                        </div>
+                        <div class="model-description">
+                            Lightweight convolutional neural network optimized for speed. Best for real-time screening applications.
+                        </div>
+                    </div>
+
+                    <div class="model-card featured">
+                        <div class="model-header">
+                            <h3>Transfer Learning</h3>
+                            <span class="model-badge balanced">Balanced</span>
+                        </div>
+                        <div class="model-stats">
+                            <div class="stat-row">
+                                <span class="stat-label">Accuracy</span>
+                                <span class="stat-value">89-93%</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Inference Time</span>
+                                <span class="stat-value">~1.2s</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Parameters</span>
+                                <span class="stat-value">25M</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">ROC AUC</span>
+                                <span class="stat-value">0.91-0.95</span>
+                            </div>
+                        </div>
+                        <div class="model-description">
+                            Pre-trained ResNet architecture fine-tuned on medical imaging data. Optimal balance of speed and accuracy.
+                        </div>
+                    </div>
+
+                    <div class="model-card">
+                        <div class="model-header">
+                            <h3>Vision Transformer</h3>
+                            <span class="model-badge accurate">Accurate</span>
+                        </div>
+                        <div class="model-stats">
+                            <div class="stat-row">
+                                <span class="stat-label">Accuracy</span>
+                                <span class="stat-value">95-98%</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Inference Time</span>
+                                <span class="stat-value">~2.5s</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">Parameters</span>
+                                <span class="stat-value">86M</span>
+                            </div>
+                            <div class="stat-row">
+                                <span class="stat-label">ROC AUC</span>
+                                <span class="stat-value">0.96-0.99</span>
+                            </div>
+                        </div>
+                        <div class="model-description">
+                            State-of-the-art transformer architecture with attention mechanisms. Highest accuracy for critical diagnoses.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="comparison-chart">
+                    <h3>Performance Metrics Overview</h3>
+                    <div class="chart-container">
+                        <div class="bar-chart">
+                            <div class="chart-bar">
+                                <div class="bar-fill" style="height: 85%;">
+                                    <span class="bar-label">CNN</span>
+                                    <span class="bar-value">85%</span>
+                                </div>
+                            </div>
+                            <div class="chart-bar">
+                                <div class="bar-fill" style="height: 91%;">
+                                    <span class="bar-label">Transfer</span>
+                                    <span class="bar-value">91%</span>
+                                </div>
+                            </div>
+                            <div class="chart-bar">
+                                <div class="bar-fill" style="height: 97%;">
+                                    <span class="bar-label">ViT</span>
+                                    <span class="bar-value">97%</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="chart-legend">
+                            <span>Accuracy Comparison</span>
+                        </div>
+                    </div>
+                </div>
             </section>
 
-            <aside id="patientReports" class="patient-panel">
-              <div class="section-title">
-                <span>Patient Information</span>
-                <small>Report generation</small>
-              </div>
-              <div class="patient-fields">
-                <label>Patient ID<input id="patientId" value="NL-2048" /></label>
-                <label>Age<input value="46" /></label>
-                <label>Scan Type<input value="Brain MRI" /></label>
-              </div>
-              <button id="reportButton" class="secondary-button" type="button">Generate Report</button>
-              <div id="reportState" class="report-state">Report waits for prediction output.</div>
-              <div class="brain-scene" aria-label="3D brain visualization">
-                <div class="brain-core"></div>
-              </div>
-            </aside>
-          </section>
+            <!-- Reports Section -->
+            <section id="reports-section" class="content-section" style="display: none;">
+                <div class="section-header">
+                    <div>
+                        <h1>Analysis Reports</h1>
+                        <p class="section-subtitle">View and manage historical scan reports and patient records</p>
+                    </div>
+                    <div class="header-actions">
+                        <button class="btn btn-outline" id="exportAllBtn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/>
+                                <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                            Export All
+                        </button>
+                    </div>
+                </div>
 
-          <section class="timeline-section">
-            <div class="section-title">
-              <span>Activity Timeline</span>
-              <small>Recent scans and actions</small>
-            </div>
-            <div id="activityTimeline" class="timeline">
-              <article><b>System ready</b><span>Model artifacts loaded from local workspace.</span></article>
-              <article><b>Corrected comparison</b><span>Transfer and Vision Transformer ranked above CNN.</span></article>
-              <article><b>Awaiting MRI upload</b><span>Prediction workflow is ready.</span></article>
-            </div>
-          </section>
+                <div class="reports-filters">
+                    <div class="filter-group">
+                        <label>Date Range</label>
+                        <select class="select-input">
+                            <option>Last 7 days</option>
+                            <option>Last 30 days</option>
+                            <option>Last 90 days</option>
+                            <option>All time</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Status</label>
+                        <select class="select-input">
+                            <option>All</option>
+                            <option>Tumor Positive</option>
+                            <option>Normal</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Search</label>
+                        <input type="text" class="text-input" placeholder="Patient ID or Scan ID">
+                    </div>
+                </div>
 
-          <footer class="footer">
-            <span>Model version: NeuroLens AI local build</span>
-            <span>TensorFlow backend · CNN · Transfer Learning · Vision Transformer</span>
-            <span>Developed by Archisman Das</span>
-          </footer>
+                <div class="reports-table-container">
+                    <table class="reports-table">
+                        <thead>
+                            <tr>
+                                <th>Scan ID</th>
+                                <th>Patient ID</th>
+                                <th>Date</th>
+                                <th>Diagnosis</th>
+                                <th>Confidence</th>
+                                <th>Model</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="reportsTableBody">
+                            <tr>
+                                <td><strong>SCAN-2024-0847</strong></td>
+                                <td>PT-2024-0156</td>
+                                <td>May 25, 2026</td>
+                                <td><span class="status-badge positive">Tumor</span></td>
+                                <td>96.2%</td>
+                                <td>ViT</td>
+                                <td>
+                                    <button class="btn btn-small btn-outline">View</button>
+                                    <button class="btn btn-small btn-outline">Download</button>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>SCAN-2024-0846</strong></td>
+                                <td>PT-2024-0155</td>
+                                <td>May 25, 2026</td>
+                                <td><span class="status-badge negative">Normal</span></td>
+                                <td>98.1%</td>
+                                <td>Transfer</td>
+                                <td>
+                                    <button class="btn btn-small btn-outline">View</button>
+                                    <button class="btn btn-small btn-outline">Download</button>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>SCAN-2024-0845</strong></td>
+                                <td>PT-2024-0154</td>
+                                <td>May 24, 2026</td>
+                                <td><span class="status-badge positive">Tumor</span></td>
+                                <td>94.7%</td>
+                                <td>ViT</td>
+                                <td>
+                                    <button class="btn btn-small btn-outline">View</button>
+                                    <button class="btn btn-small btn-outline">Download</button>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>SCAN-2024-0844</strong></td>
+                                <td>PT-2024-0153</td>
+                                <td>May 24, 2026</td>
+                                <td><span class="status-badge negative">Normal</span></td>
+                                <td>97.3%</td>
+                                <td>CNN</td>
+                                <td>
+                                    <button class="btn btn-small btn-outline">View</button>
+                                    <button class="btn btn-small btn-outline">Download</button>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>SCAN-2024-0843</strong></td>
+                                <td>PT-2024-0152</td>
+                                <td>May 23, 2026</td>
+                                <td><span class="status-badge positive">Tumor</span></td>
+                                <td>92.8%</td>
+                                <td>Transfer</td>
+                                <td>
+                                    <button class="btn btn-small btn-outline">View</button>
+                                    <button class="btn btn-small btn-outline">Download</button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="reports-summary">
+                    <div class="summary-card">
+                        <h4>Total Scans</h4>
+                        <span class="summary-value">847</span>
+                    </div>
+                    <div class="summary-card">
+                        <h4>Tumor Positive</h4>
+                        <span class="summary-value positive">312</span>
+                    </div>
+                    <div class="summary-card">
+                        <h4>Normal</h4>
+                        <span class="summary-value negative">535</span>
+                    </div>
+                    <div class="summary-card">
+                        <h4>Avg. Confidence</h4>
+                        <span class="summary-value">95.4%</span>
+                    </div>
+                </div>
+            </section>
         </main>
-      </div>
     </div>
 
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <h3>Analyzing MRI Scan</h3>
+            <p>Running inference through multiple AI models...</p>
+            <div class="loading-progress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <span id="progressText">Processing: 0%</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+        <p>© 2026 Developed by Archisman Das</p>
+    </footer>
+
     <script src="app.js"></script>
-  </body>
+</body>
 </html>

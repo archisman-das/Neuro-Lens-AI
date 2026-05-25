@@ -5,3 +5,9 @@ matplotlib
 scikit-learn
 streamlit
 pillow
+opencv-python
+pyyaml
+tqdm
+seaborn
+tensorboard
+scipy

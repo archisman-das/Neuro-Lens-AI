@@ -1,0 +1,225 @@
+# Brain Tumor Detection - Configuration File
+# This file contains all configurable parameters for the segmentation models
+
+# Data Configuration
+data:
+  data_dir: "./dataset"
+  image_size: [224, 224]
+  batch_size: 16
+  val_split: 0.2
+  num_classes: 1
+  use_augmentation: true
+  augmentation_params:
+    rotation_range: 15
+    width_shift_range: 0.1
+    height_shift_range: 0.1
+    zoom_range: 0.1
+    horizontal_flip: true
+    vertical_flip: false
+    fill_mode: "nearest"
+
+# Model Configuration
+model:
+  model_type: "unet"  # Options: unet, attention_unet, res_unet, multi_modal_unet
+  input_shape: [224, 224, 3]
+  base_filters: 64
+  dropout_rate: 0.2
+  use_batchnorm: true
+  use_attention: false
+  # For multi-modal models
+  input_shapes:
+    - [224, 224, 3]
+    - [224, 224, 3]
+  fusion_method: "attention"  # Options: attention, concat, add
+
+# Training Configuration
+training:
+  epochs: 100
+  batch_size: 16
+  learning_rate: 0.0001
+  loss_fn: "dice_bce"  # Options: dice_bce, dice, bce, focal
+  optimizer: "adam"
+  metrics:
+    - "dice_coefficient"
+    - "iou_metric"
+    - "accuracy"
+  # Early stopping
+  patience: 15
+  restore_best_weights: true
+  # Learning rate schedule
+  lr_schedule: "reduce_on_plateau"
+  lr_patience: 5
+  lr_factor: 0.5
+  min_lr: 0.0000001
+
+# K-Fold Cross-Validation Configuration
+kfold:
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  use_stratified: false
+
+# Ablation Study Configuration
+ablation:
+  # Attention ablation
+  attention_types:
+    - "none"
+    - "skip_connection"
+    - "channel"
+    - "spatial"
+    - "cbam"
+  # Architecture ablation
+  architecture_variants:
+    base_filters: [32, 64, 128]
+    num_layers: [3, 4, 5, 6]
+    use_residual: [false, true]
+  # Loss function ablation
+  loss_functions:
+    - "binary_crossentropy"
+    - "dice_loss"
+    - "combined_dice_bce"
+    - "focal_loss"
+    - "tversky_loss"
+  # Data augmentation ablation
+  augmentation_strategies:
+    - "none"
+    - "basic"
+    - "advanced"
+    - "mixup"
+    - "cutmix"
+
+# Evaluation Metrics
+evaluation:
+  metrics:
+    - "dice_coefficient"
+    - "iou"
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "specificity"
+    - "accuracy"
+  thresholds: [0.3, 0.4, 0.5, 0.6, 0.7]
+
+# Experiment Tracking
+experiment:
+  project_name: "brain_tumor_segmentation"
+  run_name: "baseline_unet"
+  tags:
+    - "segmentation"
+    - "brain_tumor"
+    - "unet"
+  save_dir: "./experiments"
+  log_level: "INFO"
+
+# Paths
+paths:
+  data_dir: "./dataset"
+  models_dir: "./models"
+  results_dir: "./results"
+  logs_dir: "./logs"
+  checkpoints_dir: "./checkpoints"
+
+# Hardware Configuration
+hardware:
+  use_gpu: true
+  gpu_memory_growth: true
+  mixed_precision: false
+  num_workers: 4
+
+# Reproducibility
+random:
+  seed: 42
+  deterministic: true
+
+# Robustness Analysis Configuration
+robustness:
+  # Corruption types to test
+  corruption_types:
+    - "gaussian_noise"
+    - "salt_pepper_noise"
+    - "gaussian_blur"
+    - "motion_blur"
+    - "brightness"
+    - "contrast"
+    - "rotation"
+    - "scaling"
+  # Corruption levels to test
+  corruption_levels: [0.01, 0.05, 0.1, 0.2, 0.3, 0.5]
+  # Metric for evaluation
+  metric: "dice_coefficient"
+
+# Uncertainty Estimation Configuration
+uncertainty:
+  # Number of Monte Carlo samples
+  num_samples: 50
+  # Methods: "mc_dropout", "deep_ensemble"
+  method: "mc_dropout"
+  # Confidence level for intervals
+  confidence_level: 0.95
+  # Uncertainty thresholds for visualization
+  high_uncertainty_threshold: 0.5
+  medium_uncertainty_threshold: 0.2
+
+# Multiclass Classification Configuration
+multiclass:
+  # Number of classes (including background)
+  num_classes: 4
+  # Class names
+  class_names:
+    - "background"
+    - "glioma"
+    - "meningioma"
+    - "pituitary"
+  # Loss function: "categorical_crossentropy", "focal_loss", "dice_loss"
+  loss_fn: "categorical_crossentropy"
+  # Use attention in multiclass model
+  use_attention: true
+
+# 3D MRI Transformer Configuration
+mri_3d_transformer:
+  # Input volume shape (depth, height, width, channels)
+  input_shape: [128, 128, 128, 1]
+  # Patch size for 3D patches
+  patch_size: 16
+  # Number of transformer layers
+  num_layers: 12
+  # Number of attention heads
+  num_heads: 12
+  # Embedding dimension
+  embedding_dim: 768
+  # MLP hidden dimension
+  mlp_dim: 3072
+  # Dropout rate
+  dropout_rate: 0.1
+
+# Federated Learning Configuration
+federated_learning:
+  # Number of clients
+  num_clients: 5
+  # Number of federation rounds
+  num_rounds: 10
+  # Local epochs per round
+  local_epochs: 1
+  # Client batch size
+  batch_size: 32
+  # Aggregation method: "fedavg", "fedprox", "scaffold"
+  aggregation_method: "fedavg"
+  # Whether to use differential privacy
+  use_differential_privacy: false
+  # Privacy budget (epsilon)
+  privacy_budget: 1.0
+
+# Self-Supervised Pre-training Configuration
+self_supervised:
+  # Pretext task: "rotation", "jigsaw", "contrastive", "simclr"
+  pretext_task: "rotation"
+  # Projection dimension
+  projection_dim: 128
+  # Temperature for contrastive loss
+  temperature: 0.5
+  # Number of augmented views for contrastive learning
+  num_views: 2
+  # Whether to use memory bank
+  use_memory_bank: false
+  # Memory bank size
+  memory_bank_size: 65536

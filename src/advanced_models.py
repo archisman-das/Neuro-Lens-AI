@@ -53,27 +53,27 @@ class MRI3DTransformer:
         self.model = None
     
     def patch_embedding(self, inputs):
+        """Extract 3D patches with spatial locality preserved and project to embeddings.
+
+        Uses a strided Conv3D whose kernel and stride equal patch_size, then flattens
+        the resulting spatial grid to a token sequence. This is the same construction
+        as the standard 3D ViT (analogous to the 2D ViT's Conv2D patch projection).
+        Previously this method used a single Reshape over the whole flattened volume,
+        which destroyed spatial structure and was not a real 3D ViT patcher.
         """
-        Extract patches and create embeddings
-        
-        Args:
-            inputs: Input 3D volume
-            
-        Returns:
-            Patch embeddings
-        """
-        # Calculate number of patches
         depth_patches = self.input_shape[0] // self.patch_size
         height_patches = self.input_shape[1] // self.patch_size
         width_patches = self.input_shape[2] // self.patch_size
         num_patches = depth_patches * height_patches * width_patches
-        
-        # Extract patches
-        patches = layers.Reshape((num_patches, self.patch_size ** 3 * self.input_shape[3]))(inputs)
-        
-        # Project patches to embedding dimension
-        patch_projection = layers.Dense(self.embedding_dim, name='patch_projection')(patches)
-        
+
+        x = layers.Conv3D(
+            filters=self.embedding_dim,
+            kernel_size=self.patch_size,
+            strides=self.patch_size,
+            padding='valid',
+            name='patch_projection_conv3d',
+        )(inputs)
+        patch_projection = layers.Reshape((num_patches, self.embedding_dim), name='patch_projection')(x)
         return patch_projection, num_patches
     
     def transformer_encoder(self, x):
@@ -362,55 +362,84 @@ class FederatedLearningServer:
         
         return aggregated_weights
     
-    def run_federation_round(self, local_epochs=1):
+    def set_eval_data(self, X_eval, y_eval):
+        """Register a held-out evaluation set for the global model.
+
+        FedAvg evaluation should NOT use the clients' own training data, as that
+        leaks training samples into the metric. Use this method to register a
+        separate held-out dataset that the server uses each round.
         """
-        Run one round of federated learning
-        
-        Args:
-            local_epochs: Number of local training epochs
-            
-        Returns:
-            Dictionary with round metrics
+        self._X_eval = X_eval
+        self._y_eval = y_eval
+
+    def run_federation_round(self, local_epochs=1):
+        """Run one round of federated learning.
+
+        Returns round metrics computed on the held-out global eval set (if
+        registered via set_eval_data) rather than on each client's own training
+        data (the prior behaviour, which leaked train data into the metric).
         """
         # Get current global weights
         global_weights = self.global_model.get_weights()
-        
+
         # Send weights to clients and train locally
         client_weights = []
         client_data_sizes = []
-        
+
         for client in self.clients:
-            # Set client weights
             client.set_weights(global_weights)
-            
-            # Train locally
-            weights, history = client.train_local(epochs=local_epochs)
-            
+            weights, _history = client.train_local(epochs=local_epochs)
             client_weights.append(weights)
             client_data_sizes.append(len(client.X))
-        
+
         # Aggregate weights
         aggregated_weights = self.aggregate_weights(client_weights, client_data_sizes)
-        
-        # Update global model
         self.global_model.set_weights(aggregated_weights)
-        
-        # Evaluate global model on each client
-        client_accuracies = []
-        for client in self.clients:
-            _, accuracy = self.global_model.evaluate(client.X, client.y, verbose=0)
-            client_accuracies.append(accuracy)
-        
-        # Store round metrics
-        round_metrics = {
-            'round': len(self.round_history) + 1,
-            'client_accuracies': client_accuracies,
-            'mean_accuracy': np.mean(client_accuracies),
-            'std_accuracy': np.std(client_accuracies)
-        }
-        
+
+        # Evaluate global model on the held-out set (if provided) instead of
+        # each client's training data. Falls back to per-client evaluation with
+        # a loud warning when no held-out set is registered.
+        if getattr(self, '_X_eval', None) is not None and getattr(self, '_y_eval', None) is not None:
+            results = self.global_model.evaluate(self._X_eval, self._y_eval, verbose=0)
+            if isinstance(results, (list, tuple)):
+                names = self.global_model.metrics_names
+                metrics_by_name = dict(zip(names, results))
+                accuracy = float(metrics_by_name.get('accuracy', metrics_by_name.get('compile_metrics', 0.0)))
+                loss = float(metrics_by_name.get('loss', results[0]))
+            else:
+                accuracy = float(results)
+                loss = float(results)
+            round_metrics = {
+                'round': len(self.round_history) + 1,
+                'eval_accuracy': accuracy,
+                'eval_loss': loss,
+                'note': 'evaluated on held-out global eval set',
+            }
+        else:
+            import warnings
+            warnings.warn(
+                'FederatedLearningServer has no held-out eval set; falling back to '
+                'per-client evaluation on training data. Call set_eval_data() with '
+                'a held-out (X, y) to avoid train/test leakage.'
+            )
+            client_accuracies = []
+            for client in self.clients:
+                results = self.global_model.evaluate(client.X, client.y, verbose=0)
+                if isinstance(results, (list, tuple)):
+                    names = self.global_model.metrics_names
+                    metrics_by_name = dict(zip(names, results))
+                    client_accuracies.append(float(metrics_by_name.get('accuracy', results[-1])))
+                else:
+                    client_accuracies.append(float(results))
+            round_metrics = {
+                'round': len(self.round_history) + 1,
+                'client_accuracies': client_accuracies,
+                'mean_accuracy': float(np.mean(client_accuracies)),
+                'std_accuracy': float(np.std(client_accuracies)),
+                'note': 'evaluated on client training data (no held-out set registered)',
+            }
+
         self.round_history.append(round_metrics)
-        
         return round_metrics
     
     def run_federation(self, num_rounds=10, local_epochs=1):
@@ -496,38 +525,93 @@ class SelfSupervisedPretrainer:
     def create_pretext_model(self, pretext_task='rotation'):
         """
         Create pretext task model
-        
+
         Args:
-            pretext_task: Type of pretext task ('rotation', 'jigsaw', 'contrastive')
-            
+            pretext_task: 'rotation', 'jigsaw', or 'contrastive' (SimCLR-style)
+
         Returns:
-            Pretext task model
+            Pretext task model. For contrastive, returns the projection model
+            (encoder + projection head, no classification head); train with the
+            NT-Xent loss via SelfSupervisedPretrainer.pretrain(...).
         """
         if self.encoder is None:
             self.create_encoder()
-        
+
         inputs = layers.Input(shape=self.input_shape)
-        
-        # Encoder
         x = self.encoder(inputs)
-        
-        # Pretext task head
+
         if pretext_task == 'rotation':
-            # 4-class rotation prediction (0°, 90°, 180°, 270°)
             outputs = layers.Dense(4, activation='softmax', name='rotation_head')(x)
         elif pretext_task == 'jigsaw':
-            # Jigsaw puzzle solving (number of permutations)
-            num_permutations = 10  # Example
+            num_permutations = 10
             outputs = layers.Dense(num_permutations, activation='softmax', name='jigsaw_head')(x)
         elif pretext_task == 'contrastive':
-            # Contrastive learning (similarity score)
-            outputs = layers.Dense(1, activation='sigmoid', name='contrastive_head')(x)
+            # SimCLR-style projection head producing an L2-normalised embedding;
+            # trained with NT-Xent (see _nt_xent_loss). Previously this branch
+            # used Dense(1, sigmoid) with sparse_categorical_crossentropy, which
+            # is an incoherent loss/head combo and would not train.
+            x = layers.Dense(self.projection_dim, activation='relu', name='proj_hidden')(x)
+            x = layers.Dense(self.projection_dim, name='proj_out')(x)
+            outputs = layers.Lambda(
+                lambda t: tf.math.l2_normalize(t, axis=-1), name='projection_l2'
+            )(x)
         else:
             raise ValueError(f"Unknown pretext task: {pretext_task}")
-        
+
         self.pretext_model = Model(inputs=inputs, outputs=outputs, name=f'pretext_{pretext_task}')
-        
         return self.pretext_model
+
+    @staticmethod
+    def _nt_xent_loss(temperature=0.5):
+        """SimCLR NT-Xent contrastive loss for two augmented views per sample.
+
+        Expects the model output to be an L2-normalised projection of a batch of
+        shape (2N, D), where rows 0..N-1 are the first view of each sample and
+        rows N..2N-1 are the second view (paired in order).
+        """
+        def loss_fn(_y_true_unused, z):
+            batch_size_2 = tf.shape(z)[0]
+            batch_size = batch_size_2 // 2
+
+            # Cosine similarity matrix (already L2 normed)
+            sim = tf.matmul(z, z, transpose_b=True) / temperature
+
+            # Mask out self-similarity
+            mask_self = tf.eye(batch_size_2, dtype=tf.bool)
+            sim = tf.where(mask_self, -1e9 * tf.ones_like(sim), sim)
+
+            # Positive pair indices: i -> i+N for i in [0,N), and i -> i-N for i in [N,2N)
+            ar = tf.range(batch_size_2)
+            positives = tf.where(ar < batch_size, ar + batch_size, ar - batch_size)
+
+            log_softmax = tf.nn.log_softmax(sim, axis=1)
+            loss = -tf.gather(log_softmax, positives, batch_dims=1)
+            return tf.reduce_mean(loss)
+
+        return loss_fn
+
+    @staticmethod
+    def make_two_view_batch(X, augment_fn=None):
+        """Build a SimCLR-style two-view batch (2N, H, W, C) from N images.
+
+        If augment_fn is None, applies random horizontal/vertical flips and a
+        random 90-degree rotation as a sensible default for medical images.
+        """
+        import tensorflow as _tf
+
+        def _default_aug(img):
+            img = _tf.image.random_flip_left_right(img)
+            img = _tf.image.random_flip_up_down(img)
+            k = _tf.random.uniform(shape=(), minval=0, maxval=4, dtype=_tf.int32)
+            img = _tf.image.rot90(img, k=k)
+            img = _tf.image.random_brightness(img, max_delta=0.1)
+            img = _tf.image.random_contrast(img, lower=0.9, upper=1.1)
+            return img
+
+        aug = augment_fn or _default_aug
+        view1 = _tf.stack([aug(_tf.convert_to_tensor(x)) for x in X])
+        view2 = _tf.stack([aug(_tf.convert_to_tensor(x)) for x in X])
+        return _tf.concat([view1, view2], axis=0).numpy()
     
     def prepare_rotation_data(self, X):
         """
@@ -587,47 +671,75 @@ class SelfSupervisedPretrainer:
         
         return np.array(permuted_images), np.array(permutation_labels)
     
-    def pretrain(self, X, pretext_task='rotation', epochs=50, batch_size=32):
+    def pretrain(self, X, pretext_task='rotation', epochs=50, batch_size=32, temperature=0.5):
         """
-        Perform self-supervised pre-training
-        
-        Args:
-            X: Input images
-            pretext_task: Type of pretext task
-            epochs: Number of training epochs
-            batch_size: Batch size
-            
-        Returns:
-            Training history
+        Perform self-supervised pre-training.
+
+        - rotation: 4-way rotation prediction (sparse_categorical_crossentropy).
+        - jigsaw: permutation classification (sparse_categorical_crossentropy).
+        - contrastive: SimCLR-style NT-Xent over two augmented views per image.
+          (Previously this branch trained a sigmoid head with sparse-categorical
+          loss, which would not learn anything meaningful.)
         """
         # Create pretext model
         self.create_pretext_model(pretext_task)
-        
-        # Prepare pretext data
+
         if pretext_task == 'rotation':
             X_pretext, y_pretext = self.prepare_rotation_data(X)
-        elif pretext_task == 'jigsaw':
+            self.pretext_model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+                loss='sparse_categorical_crossentropy',
+                metrics=['accuracy'],
+            )
+            history = self.pretext_model.fit(
+                X_pretext, y_pretext,
+                epochs=epochs, batch_size=batch_size, validation_split=0.2, verbose=1,
+            )
+            return history
+
+        if pretext_task == 'jigsaw':
             X_pretext, y_pretext = self.prepare_jigsaw_data(X)
-        else:
-            X_pretext, y_pretext = X, np.zeros(len(X))  # Placeholder
-        
-        # Compile pretext model
-        self.pretext_model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-            loss='sparse_categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        
-        # Train
-        history = self.pretext_model.fit(
-            X_pretext, y_pretext,
-            epochs=epochs,
-            batch_size=batch_size,
-            validation_split=0.2,
-            verbose=1
-        )
-        
-        return history
+            self.pretext_model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
+                loss='sparse_categorical_crossentropy',
+                metrics=['accuracy'],
+            )
+            history = self.pretext_model.fit(
+                X_pretext, y_pretext,
+                epochs=epochs, batch_size=batch_size, validation_split=0.2, verbose=1,
+            )
+            return history
+
+        if pretext_task == 'contrastive':
+            self.pretext_model.compile(
+                optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+                loss=self._nt_xent_loss(temperature=temperature),
+            )
+            # Custom batch loop: for each step we sample N images and form a
+            # (2N, H, W, C) two-view batch in-memory.
+            n = len(X)
+            steps_per_epoch = max(1, n // batch_size)
+            history = {'loss': []}
+            rng = np.random.default_rng(seed=42)
+            for epoch in range(epochs):
+                epoch_losses = []
+                perm = rng.permutation(n)
+                for step in range(steps_per_epoch):
+                    idx = perm[step * batch_size : (step + 1) * batch_size]
+                    if len(idx) == 0:
+                        continue
+                    batch_imgs = X[idx]
+                    two_view = self.make_two_view_batch(batch_imgs)
+                    # NT-Xent ignores y_true, but Keras requires a target tensor.
+                    dummy_y = np.zeros((two_view.shape[0],), dtype=np.float32)
+                    loss = self.pretext_model.train_on_batch(two_view, dummy_y)
+                    epoch_losses.append(float(loss))
+                mean_loss = float(np.mean(epoch_losses)) if epoch_losses else float('nan')
+                history['loss'].append(mean_loss)
+                print(f'[SSL contrastive] epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}')
+            return history
+
+        raise ValueError(f'Unknown pretext task: {pretext_task}')
     
     def get_pretrained_encoder(self):
         """Get the pretrained encoder"""

@@ -3,6 +3,7 @@ Training Script for Brain Tumor Segmentation Models
 """
 
 import argparse
+import sys
 import numpy as np
 import tensorflow as tf
 from pathlib import Path
@@ -11,7 +12,11 @@ import os
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-from segmentation_models import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.append(str(_REPO_ROOT))
+
+from src.segmentation_models import (
     build_unet,
     build_attention_unet,
     build_res_unet,
@@ -19,15 +24,15 @@ from segmentation_models import (
     dice_coefficient,
     dice_loss,
     combined_loss,
-    iou_metric
+    iou_metric,
 )
-from kfold_validation import SegmentationKFoldValidator, prepare_data_for_kfold
-from ablation_study import (
+from src.kfold_validation import SegmentationKFoldValidator, prepare_data_for_kfold
+from src.ablation_study import (
     SegmentationAblationStudy,
     calculate_segmentation_metrics,
     create_attention_ablation_study,
     create_architecture_ablation_study,
-    create_loss_ablation_study
+    create_loss_ablation_study,
 )
 
 

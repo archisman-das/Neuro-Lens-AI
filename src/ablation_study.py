@@ -622,28 +622,34 @@ def calculate_segmentation_metrics(model, data, thresholds=None):
     Returns:
         Dictionary of metrics
     """
-    from sklearn.metrics import dice_score, jaccard_score, confusion_matrix
-    
+    from sklearn.metrics import jaccard_score, confusion_matrix
+
+    def _dice_score(y_true, y_pred, smooth=1e-6):
+        y_true = np.asarray(y_true).ravel().astype(np.float32)
+        y_pred = np.asarray(y_pred).ravel().astype(np.float32)
+        intersection = float(np.sum(y_true * y_pred))
+        return (2.0 * intersection + smooth) / (float(np.sum(y_true) + np.sum(y_pred)) + smooth)
+
     X_val, y_val = data
-    
+
     # Predict
     y_pred = model.predict(X_val)
-    
+
     # Use threshold of 0.5 by default
     if thresholds is None:
         thresholds = [0.5]
-    
+
     metrics = {}
-    
+
     for threshold in thresholds:
         y_pred_binary = (y_pred >= threshold).astype(int)
-        
+
         # Flatten for metric calculation
         y_val_flat = y_val.flatten()
         y_pred_flat = y_pred_binary.flatten()
-        
-        # Dice coefficient
-        dice = dice_score(y_val_flat, y_pred_flat)
+
+        # Dice coefficient (local implementation; sklearn has no dice_score)
+        dice = _dice_score(y_val_flat, y_pred_flat)
         
         # IoU (Jaccard index)
         iou = jaccard_score(y_val_flat, y_pred_flat)

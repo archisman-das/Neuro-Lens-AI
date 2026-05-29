@@ -56,21 +56,36 @@ def _plot_image(image, title, save_path):
 
 
 def vit_patch_saliency(model, image, image_size=(224, 224)):
-    patch_layer = model.get_layer('patch_embedding')
-    patch_model = tf.keras.Model(inputs=model.inputs, outputs=patch_layer.output)
-    image = tf.expand_dims(image, axis=0)
+    """Saliency for the hybrid ResNet50+ViT classifier defined in src/models.py.
+
+    The hybrid model projects the ResNet50 feature map (7x7) into patch tokens via
+    a 1x1 Conv2D named 'hybrid_patch_projection', then reshapes to a sequence and
+    passes it through transformer blocks. We compute gradient-based saliency on
+    the patch token sequence (after position embedding) and reshape it back to
+    a 7x7 grid before resizing to the input resolution.
+    """
+    try:
+        token_layer = model.get_layer('hybrid_patch_tokens')
+    except ValueError:
+        token_layer = model.get_layer('hybrid_patch_projection')
+
+    token_model = tf.keras.Model(inputs=model.inputs, outputs=token_layer.output)
+    image_batch = tf.expand_dims(image, axis=0)
     with tf.GradientTape() as tape:
-        patch_embeddings = patch_model(image)
-        tape.watch(patch_embeddings)
-        predictions = model(image)
+        tokens = token_model(image_batch)
+        tape.watch(tokens)
+        predictions = model(image_batch)
         loss = predictions[:, 0]
-    grads = tape.gradient(loss, patch_embeddings)
-    importance = tf.reduce_mean(tf.abs(grads), axis=-1)
+    grads = tape.gradient(loss, tokens)
+    importance = tf.reduce_mean(tf.abs(grads * tokens), axis=-1)
     importance = tf.squeeze(importance).numpy()
 
-    patch_h = image_size[0] // patch_layer.strides[0]
-    patch_w = image_size[1] // patch_layer.strides[1]
-    importance = importance.reshape(patch_h, patch_w)
+    num_tokens = importance.shape[0] if importance.ndim == 1 else importance.size
+    side = int(round(num_tokens ** 0.5))
+    if side * side != num_tokens:
+        side = max(1, int(np.floor(num_tokens ** 0.5)))
+        importance = importance[: side * side]
+    importance = importance.reshape(side, side)
     importance = importance / (importance.max() + 1e-8)
     importance = tf.expand_dims(importance, axis=-1)
     importance = tf.image.resize(importance, image_size, method='bilinear').numpy()

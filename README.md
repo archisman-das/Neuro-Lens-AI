@@ -1,17 +1,23 @@
 # NeuroLens AI
 
-NeuroLens AI is a brain MRI analysis project for tumor detection, model comparison, and segmentation research. It includes a browser dashboard, a Streamlit interface, TensorFlow training scripts, evaluation utilities, and research workflows for U-Net based segmentation experiments.
+NeuroLens AI is a brain MRI analysis project for tumor detection, model comparison, and segmentation. It includes a browser dashboard, a Streamlit interface, TensorFlow training scripts for the classifiers, a PyTorch Attention U-Net for segmentation, evaluation utilities, and research workflows for U-Net experiments.
 
 > This project is for research and educational use only. It is not a medical device and should not be used as the sole basis for clinical decisions.
 
 ## Features
 
-- MRI upload and inference workflow for tumor / no-tumor classification.
-- Dashboard metrics for CNN, transfer learning, and Vision Transformer models.
-- Grad-CAM support for convolutional models when trained weights are available.
-- Segmentation model implementations including U-Net, Attention U-Net, Res U-Net, and multi-modal U-Net variants.
-- Advanced experiment scripts for k-fold validation, ablation studies, robustness analysis, and segmentation training.
-- Documentation and presentation assets under `Documentation/` and `ppt/`.
+- MRI upload + inference for tumor / no-tumor binary classification (CNN, ResNet50 transfer, hybrid ResNet+ViT).
+- Real Grad-CAM overlays for CNN and Transfer Learning models in the HTTP dashboard.
+- ViT patch-saliency for the hybrid ViT (computed on the patch-token sequence).
+- PyTorch **Attention U-Net** for binary tumor segmentation, trained on GPU.
+- Browser dashboard (`web_dashboard/`) that talks to the real `/predict` and `/segment` endpoints.
+- Streamlit dashboard (`app.py`) for quick local model comparison.
+- Reference TF segmentation framework (U-Net / Attention U-Net / Res U-Net / Multi-modal U-Net) with k-fold, ablation, and robustness scripts.
+- Documentation under `Documentation/`.
+
+## What this is NOT
+
+The earlier IEEE-style write-up in `Documentation/` describes pure 3D MRI, federated learning, and self-supervised pre-training. **Those features are scaffolding under `src/advanced_models.py` and are not wired into any production code path.** See `PROJECT_DOCUMENTATION.md` for an honest feature table.
 
 ## Project Structure
 
@@ -90,19 +96,45 @@ Available model choices:
 
 Training saves weights and history under `artifacts/<model_name>/`.
 
-## Train Segmentation Models
+## Train Segmentation Models (PyTorch, GPU)
 
-Segmentation settings are documented in `config.yaml`; the training script accepts matching command-line options.
+The active segmentation pipeline is in PyTorch because TF 2.21 has no native-Windows GPU support. Step 1 generates pseudo-masks from the existing classification dataset (no ground-truth masks ship with the Kaggle source):
 
 ```bash
-python src/train_segmentation.py --data_dir dataset --model_type unet --epochs 100 --batch_size 16
+python generate_pseudo_masks.py --source dataset_real --output dataset_real --clean
 ```
 
-The segmentation workflow supports U-Net style models, cross-validation, ablation studies, and robustness evaluation.
+Step 2 trains the Attention U-Net on GPU (CUDA auto-detected; falls back to CPU otherwise):
+
+```bash
+python src/train_segmentation_torch.py --data_dir dataset_real \
+    --epochs 25 --batch_size 8 --image_size 256 --base_filters 32
+```
+
+Outputs land in `segmentation_artifacts/attention_unet/`:
+
+- `best_model.pt` (state dict + config)
+- `history.json`, `training_curves.png`
+- `evaluation_metrics.json`
+
+The dashboard's `/segment` endpoint loads these weights automatically.
+
+### Reference TensorFlow segmentation (CPU)
+
+The original TF U-Net stack still works for CPU experimentation / k-fold / ablation:
+
+```bash
+python src/train_segmentation.py --data_dir dataset_real --model_type attention_unet \
+    --epochs 25 --batch_size 8
+```
+
+The TF script expects `<split>/images/` and `<split>/masks/` — generate them with `generate_pseudo_masks.py` first.
 
 ## Dataset Notes
 
-The training scripts expect image datasets in local folders such as `dataset/` or `dataset_real/`. These folders are intentionally not required for simply viewing the source code or running the dashboard shell. Add trained model artifacts locally before using live inference.
+The Kaggle Brain Tumor MRI dataset is a 2D JPG classification dataset (`tumor` / `no_tumor`). It contains no ground-truth segmentation masks. `generate_pseudo_masks.py` synthesises binary masks via brain-region + Otsu thresholding + largest-blob filtering. These are weakly-supervised pseudo-labels suitable for demoing the U-Net pipeline — they are NOT radiologist annotations.
+
+For research-grade segmentation, point the script at a real volumetric dataset (e.g. BraTS) and provide ground-truth masks.
 
 ## License
 

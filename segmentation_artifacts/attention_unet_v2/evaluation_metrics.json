@@ -1,0 +1,46 @@
+{
+  "val": {
+    "split": "val",
+    "dice": 0.6813658489610753,
+    "iou": 0.6208579874276912,
+    "pixel_accuracy": 0.9917373657226562,
+    "bce_loss": 0.0362657174674109,
+    "positive_voxels_true": 632029,
+    "positive_voxels_pred": 690438,
+    "micro_dice": 0.7336304043881624,
+    "micro_iou": 0.5793177654693408
+  },
+  "test": {
+    "split": "test",
+    "dice": 0.6525378922621409,
+    "iou": 0.5909005418933672,
+    "pixel_accuracy": 0.99121696373512,
+    "bce_loss": 0.03852014879471269,
+    "positive_voxels_true": 666122,
+    "positive_voxels_pred": 706495,
+    "micro_dice": 0.7086463303310392,
+    "micro_iou": 0.5487623932742616
+  },
+  "test_dataset_lgg_test": {
+    "split": "dataset_lgg/test",
+    "dice": 0.6608232761684217,
+    "iou": 0.5923687270597408,
+    "pixel_accuracy": 0.9921279706453022,
+    "bce_loss": 0.03212292972449703,
+    "positive_voxels_true": 395995,
+    "positive_voxels_pred": 448830,
+    "micro_dice": 0.8145379220548634,
+    "micro_iou": 0.6871058443866649
+  },
+  "test_dataset_real_test": {
+    "split": "dataset_real/test",
+    "dice": 0.6426037049293518,
+    "iou": 0.5863454335927963,
+    "pixel_accuracy": 0.99048828125,
+    "bce_loss": 0.04365229226881638,
+    "positive_voxels_true": 270127,
+    "positive_voxels_pred": 257665,
+    "micro_dice": 0.539147997696062,
+    "micro_iou": 0.3690640782541704
+  }
+}

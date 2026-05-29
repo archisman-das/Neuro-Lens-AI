@@ -1,0 +1,41 @@
+[info] Using device: cuda (NVIDIA GeForce RTX 4060 Laptop GPU)
+[info] Train: 3168  Val: 398  Test: 395
+[info] Model parameters: 4,417,217
+E:\Neuro-Lens-AI-main\Neuro-Lens-AI-main\src\train_segmentation_torch.py:246: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\pytorch\torch\csrc\autograd\generated\python_variable_methods.cpp:837.)
+  running_loss += float(loss)
+[epoch 01/25] train_loss=0.6151  train_dice~=0.2469  val_dice=0.2077  val_iou=0.1605  lr=1.00e-03  (153.9s)
+        -> new best val_dice=0.2077; weights saved to segmentation_artifacts\attention_unet\best_model.pt
+[epoch 02/25] train_loss=0.5439  train_dice~=0.2002  val_dice=0.3543  val_iou=0.2976  lr=1.00e-03  (39.1s)
+        -> new best val_dice=0.3543; weights saved to segmentation_artifacts\attention_unet\best_model.pt
+[epoch 03/25] train_loss=0.5328  train_dice~=0.2281  val_dice=0.2233  val_iou=0.1751  lr=1.00e-03  (55.4s)
+[epoch 04/25] train_loss=0.5269  train_dice~=0.2382  val_dice=0.2345  val_iou=0.1746  lr=1.00e-03  (67.9s)
+[epoch 05/25] train_loss=0.5232  train_dice~=0.2589  val_dice=0.2501  val_iou=0.1916  lr=1.00e-03  (69.5s)
+[epoch 06/25] train_loss=0.5218  train_dice~=0.2585  val_dice=0.2361  val_iou=0.1762  lr=5.00e-04  (72.1s)
+[epoch 07/25] train_loss=0.5167  train_dice~=0.2661  val_dice=0.2643  val_iou=0.2039  lr=5.00e-04  (73.9s)
+[epoch 08/25] train_loss=0.5132  train_dice~=0.2825  val_dice=0.3492  val_iou=0.2949  lr=5.00e-04  (76.0s)
+[info] Early stopping: no improvement in 6 epochs.
+[info] Final evaluation:
+{
+  "val": {
+    "dice": 0.3543316596681352,
+    "iou": 0.2975583585100348,
+    "pixel_accuracy": 0.9856720042228698,
+    "bce_loss": 0.047236283643869684,
+    "positive_voxels_true": 138151,
+    "positive_voxels_pred": 178953,
+    "micro_dice": 0.34182476411524293,
+    "micro_iou": 0.20614513877530838
+  },
+  "test": {
+    "dice": 0.3317304892559433,
+    "iou": 0.27555163600151666,
+    "pixel_accuracy": 0.9841718300424441,
+    "bce_loss": 0.049046222593240214,
+    "positive_voxels_true": 151935,
+    "positive_voxels_pred": 205307,
+    "micro_dice": 0.3547791133181429,
+    "micro_iou": 0.21564223758043496
+  }
+}
+[done] Best val Dice = 0.3543

@@ -1,0 +1,22 @@
+{
+  "val": {
+    "dice": 0.6230372924377141,
+    "iou": 0.5563343539394229,
+    "pixel_accuracy": 0.9923873935660271,
+    "bce_loss": 0.03188488586273121,
+    "positive_voxels_true": 217132,
+    "positive_voxels_pred": 209674,
+    "micro_dice": 0.8080064478943595,
+    "micro_iou": 0.6778614250614251
+  },
+  "test": {
+    "dice": 0.5247749511732153,
+    "iou": 0.4589938624061077,
+    "pixel_accuracy": 0.9827646740277608,
+    "bce_loss": 0.06074004266799117,
+    "positive_voxels_true": 222672,
+    "positive_voxels_pred": 330725,
+    "micro_dice": 0.6555655343270744,
+    "micro_iou": 0.4876143471961248
+  }
+}

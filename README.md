@@ -1,6 +1,28 @@
+---
+title: NeuroLens AI - Brain Tumor Detection
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Brain MRI tumor segmentation, classification, and open-source LLM radiology report.
+tags:
+  - medical-imaging
+  - brain-tumor
+  - segmentation
+  - vision-language
+  - llama
+  - onnx
+license: mit
+---
+
 # NeuroLens AI
 
 NeuroLens AI is a brain MRI analysis project for tumor detection, model comparison, and segmentation. It includes a browser dashboard, a Streamlit interface, TensorFlow training scripts for the classifiers, a PyTorch Attention U-Net for segmentation, evaluation utilities, and research workflows for U-Net experiments.
+
+## Live demo
+
+Hosted on HuggingFace Spaces: [Tubai01/neurolens-ai](https://huggingface.co/spaces/Tubai01/neurolens-ai).
 
 > This project is for research and educational use only. It is not a medical device and should not be used as the sole basis for clinical decisions.
 

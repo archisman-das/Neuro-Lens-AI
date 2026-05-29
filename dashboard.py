@@ -1012,7 +1012,6 @@ def _onnx_occlusion_saliency_data_url(sess, image_array_0_255: np.ndarray,
     CUDA / ~6 s on CPU. For Spaces this is acceptable on a per-request basis;
     callers wanting faster preview can bump stride to 32 (49 forwards).
     """
-    import matplotlib.cm as cm
     import cv2 as _cv2
     h = w = 224  # all current classifier ONNXes were exported at 224
     arr = image_array_0_255.astype(np.float32) / 255.0
@@ -1049,7 +1048,7 @@ def _onnx_occlusion_saliency_data_url(sess, image_array_0_255: np.ndarray,
 
     sal_resized = _cv2.resize(sal, (224, 224), interpolation=_cv2.INTER_LINEAR)
     heat = (sal_resized * 255).astype(np.uint8)
-    colored = (cm.get_cmap('viridis')(heat / 255.0)[..., :3] * 255).astype(np.uint8)
+    colored = _viridis_rgb(heat / 255.0)
     overlay = (0.5 * image_array_0_255.astype(np.float32) + 0.5 * colored.astype(np.float32))
     overlay = np.clip(overlay, 0, 255).astype(np.uint8)
     buf = io.BytesIO()
@@ -1057,11 +1056,37 @@ def _onnx_occlusion_saliency_data_url(sess, image_array_0_255: np.ndarray,
     return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
 
 
+def _viridis_rgb(arr01: np.ndarray) -> np.ndarray:
+    """Apply a viridis-style colormap to a (H, W) float array in [0,1] using
+    only numpy. Returns (H, W, 3) uint8.
+
+    Why hand-rolled: the matplotlib import inside the saliency path was the
+    silent failure that left Grad-CAM unavailable on the Spaces container
+    (matplotlib isn't a runtime dep we want to ship - it's a 30 MB install
+    just for the colormap). Five-anchor piecewise-linear interpolation is
+    visually indistinguishable from matplotlib viridis at this resolution.
+    """
+    anchors = np.array([
+        [68,   1,  84],   # 0.00 dark purple
+        [59,  82, 139],   # 0.25 purple-blue
+        [33, 145, 140],   # 0.50 teal
+        [94, 201,  98],   # 0.75 green-yellow
+        [253, 231, 37],   # 1.00 yellow
+    ], dtype=np.float32)
+    t = np.clip(arr01, 0.0, 1.0)
+    seg = (t * 4.0).astype(np.int32)
+    seg = np.clip(seg, 0, 3)
+    f = (t * 4.0 - seg)[..., None]
+    lo = anchors[seg]
+    hi = anchors[seg + 1]
+    rgb = lo * (1.0 - f) + hi * f
+    return np.clip(rgb, 0, 255).astype(np.uint8)
+
+
 def _torch_gradcam_data_url(model, model_name: str, image_array_0_255: np.ndarray,
                              normalize_imagenet: bool, device) -> str:
     """PyTorch Grad-CAM on the last conv module exposed by the classifier."""
     import torch
-    import matplotlib.cm as cm
     target_module = getattr(model, 'last_conv_module', None)
     if target_module is None:
         return None
@@ -1109,7 +1134,7 @@ def _torch_gradcam_data_url(model, model_name: str, image_array_0_255: np.ndarra
     import cv2
     cam_resized = cv2.resize(cam_np, (224, 224), interpolation=cv2.INTER_LINEAR)
     heat = (cam_resized * 255).astype(np.uint8)
-    colored = (cm.get_cmap('viridis')(heat / 255.0)[..., :3] * 255).astype(np.uint8)
+    colored = _viridis_rgb(heat / 255.0)
     overlay = (0.5 * image_array_0_255.astype(np.float32) + 0.5 * colored.astype(np.float32))
     overlay = np.clip(overlay, 0, 255).astype(np.uint8)
 

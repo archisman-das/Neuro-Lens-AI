@@ -767,8 +767,26 @@ class NeuroLensApp {
                     .filter(p => p.result)
                     .reduce((acc, p) => (!acc || (p.result.confidence > acc.result.confidence) ? p : acc), null);
                 const scanId = `BATCH-${Date.now()}-${i}`;
+                // Read the file into a data URL once so the Results-page
+                // preview can show the original MRI when the user drills in.
+                let imageDataUrl = null;
+                try {
+                    imageDataUrl = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result);
+                        reader.onerror = () => reject(reader.error);
+                        reader.readAsDataURL(file);
+                    });
+                } catch (_) { /* ignore - preview just won't show */ }
                 const entry = {
                     id: scanId, filename: file.name,
+                    // Retain the File object so downstream actions on the
+                    // Results page (Generate Report, Print, re-segment with
+                    // a different threshold) can re-POST the bytes to the
+                    // server. Without this, generateReport() bails because
+                    // this.currentFile was never set.
+                    file: file,
+                    imageDataUrl,
                     predictions, segmentation: seg,
                     mean, std, entropy, verdict, band,
                     bestModel: best ? best.model : '--',
@@ -860,9 +878,15 @@ class NeuroLensApp {
             robustness,
         };
         this.currentSegmentation = entry.segmentation || { result: null, error: null };
-        // We don't carry the raw image data URL across batch entries; leave
-        // imageDataUrl unset so the Visualization placeholder explains.
-        this.imageDataUrl = entry.predictions.find(p => p.result && p.result.image)?.result?.image || null;
+        // Restore the File object + data URL we captured at batch time so
+        // downstream actions on the Results page (Generate Report, Print,
+        // re-segment) can re-POST the bytes to /explain / /segment without
+        // the user having to re-upload.
+        this.currentFile = entry.file || null;
+        this.imageDataUrl = entry.imageDataUrl
+            || entry.predictions.find(p => p.result && p.result.image)?.result?.image
+            || null;
+        this.currentExplanation = null;  // not generated yet for this batch entry
         this.displayResults();
     }
 
@@ -1654,6 +1678,7 @@ class NeuroLensApp {
                 currentSegmentation: this.currentSegmentation,
                 currentExplanation: this.currentExplanation || null,
                 imageDataUrl: this.imageDataUrl,
+                currentFile: this.currentFile,
             };
         }
         this._recentScans.unshift(entry);
@@ -1717,6 +1742,7 @@ class NeuroLensApp {
         if (snap.currentSegmentation) this.currentSegmentation = snap.currentSegmentation;
         if (snap.currentExplanation !== undefined) this.currentExplanation = snap.currentExplanation;
         if (snap.imageDataUrl) this.imageDataUrl = snap.imageDataUrl;
+        if (snap.currentFile) this.currentFile = snap.currentFile;
         if (this.currentResults) {
             this.displayResults();
         }

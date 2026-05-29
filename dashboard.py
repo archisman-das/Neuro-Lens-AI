@@ -45,11 +45,18 @@ MODEL_TYPES = ['cnn', 'transfer', 'vit']
 MODEL_LABELS = {'cnn': 'CNN', 'transfer': 'Transfer Learning', 'vit': 'Vision Transformer'}
 ARTIFACTS_DIRS = [ROOT_DIR / 'real_eval_fixed', ROOT_DIR / 'real_eval_current', ROOT_DIR / 'artifacts']
 # Probe these in order; the first one with a best_model.pt wins.
+#  - attention_unet_v5:  SMP UNet+ResNet34, BraTS+LGG positives + Kaggle no-tumor
+#                        negatives (empty masks). Balanced 50/50 sampler, Dice+BCE
+#                        loss with positive weight, modality dropout. Eliminates
+#                        the positive bias that produced false-positive masks on
+#                        healthy brains in v3. SEE: prepare_v5_dataset.py +
+#                        src/train_segmentation_v5.py. Probed first.
 #  - attention_unet_v3:  SMP UNet+ResNet34, BraTS+LGG (real masks). micro-Dice 0.910 BraTS.
 #  - attention_unet_v2:  SMP UNet+ResNet34, LGG + Kaggle pseudo masks.
 #  - attention_unet_lgg: hand-rolled Attention U-Net, LGG only.
 #  - attention_unet:     pseudo-mask baseline (traces skull); historical reference.
 SEGMENTATION_DIRS = [
+    ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v5',
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v3',
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v2',
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_lgg',
@@ -1526,6 +1533,8 @@ def _ensure_onnx_models_downloaded():
     # we keep out of the default Spaces image.
     needed = [
         # (local target relative to ROOT_DIR, repo-relative path)
+        ('segmentation_artifacts/attention_unet_v5/best_model.onnx',
+         'attention_unet_v5/best_model.onnx'),
         ('segmentation_artifacts/attention_unet_v3/best_model.onnx',
          'attention_unet_v3/best_model.onnx'),
         ('segmentation_artifacts/attention_unet_t1c/best_model.onnx',
@@ -1593,7 +1602,9 @@ def _warm_models_async():
                         warmed += 1
         # Segmentation cascade pair. Accept either .pt (dev box) or .onnx
         # alone (Spaces, where we only have .onnx after the HF Hub download).
-        for d in [ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v3',
+        # v5 first (trained with negatives), v3 as fallback, T1c specialist.
+        for d in [ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v5',
+                   ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v3',
                    MODALITY_DIRS.get('t1c')]:
             if d is None:
                 continue

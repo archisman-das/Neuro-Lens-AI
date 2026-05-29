@@ -623,6 +623,11 @@
                                 <h4>Why the Classifiers Ruled This Out</h4>
                                 <pre id="explainNegativeExplanation" class="explain-grade"></pre>
                             </div>
+                            <div class="explain-section explain-vision-negative" id="explainVisionNegativeSection" style="display:none;">
+                                <h4>Vision LLM Reasoning (Pattern D - negative-case)</h4>
+                                <p class="explain-subtle">The vision model was shown the original MRI and asked to describe what visible features support the no-tumor verdict. Output is validated to ensure it does not contradict the verdict.</p>
+                                <pre id="explainVisionNegativeText" class="explain-grade"></pre>
+                            </div>
 
                             <!-- Structured findings (radiology-style, 8 domains) -->
                             <div class="explain-section" id="explainFindingsSection">

@@ -1019,6 +1019,11 @@ class NeuroLensApp {
                     <h4>Why the Classifiers Ruled This Out</h4>
                     <pre id="explainNegativeExplanation" class="explain-grade"></pre>
                 </div>
+                <div class="explain-section explain-vision-negative" id="explainVisionNegativeSection" style="display:none;">
+                    <h4>Vision LLM Reasoning (Pattern D - negative-case)</h4>
+                    <p class="explain-subtle">The vision model was shown the original MRI and asked to describe what visible features support the no-tumor verdict. Output is validated to ensure it does not contradict the verdict.</p>
+                    <pre id="explainVisionNegativeText" class="explain-grade"></pre>
+                </div>
                 <div class="explain-section" id="explainFindingsSection">
                     <h4>Structured Findings</h4>
                     <dl class="explain-findings" id="explainFindings"></dl>
@@ -1187,6 +1192,20 @@ class NeuroLensApp {
             } else {
                 negativeSection.style.display = 'none';
                 negativeText.textContent = '';
+            }
+        }
+
+        // --- Pattern D: vision LLM reasoning for negative cases -----------
+        const visionNegSection = document.getElementById('explainVisionNegativeSection');
+        const visionNegText = document.getElementById('explainVisionNegativeText');
+        const visionNeg = exp.vision_negative_reasoning;
+        if (visionNegSection && visionNegText) {
+            if (visionNeg) {
+                visionNegSection.style.display = 'block';
+                visionNegText.textContent = visionNeg;
+            } else {
+                visionNegSection.style.display = 'none';
+                visionNegText.textContent = '';
             }
         }
 

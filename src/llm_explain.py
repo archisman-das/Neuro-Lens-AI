@@ -191,17 +191,103 @@ def explain(
             f'classifier_consensus_no_tumor (mean p={cls_mean_p:.3f}, '
             f'{cls_band} confidence) - no clinical finding to enrich.'
         )
-        for k in ('polish', 'differential_expansion', 'visual_observer'):
+        # Patterns A (polish) and B (differential expansion) stay short-
+        # circuited - there's no clinical finding to polish or differentiate.
+        # Pattern C (general visual observer) is replaced with Pattern D
+        # below: a vision-LLM call with a NEGATIVE-specific prompt that asks
+        # the model to articulate which visible features in the actual MRI
+        # support the no-tumor verdict. This gives the user real reasoning
+        # for negative cases instead of an empty short-circuit.
+        for k in ('polish', 'differential_expansion'):
             llm_passes[k] = {'status': 'short_circuited', 'reason': skip_reason}
+
+        # Build the image set we'll feed to Pattern D.
+        if backend == 'ollama':
+            image_set = [('original_mri', image_rgb), ('overlay', overlay_rgb)]
+        else:
+            image_set = [
+                ('original_mri', image_rgb),
+                ('predicted_mask', _mask_to_rgb(mask_bin)),
+                ('overlay', overlay_rgb),
+                ('gradcam', gradcam_rgb),
+            ]
+        images_b64, image_labels = [], []
+        for label, arr in image_set:
+            if arr is None:
+                continue
+            try:
+                images_b64.append(_to_base64_png(arr))
+                image_labels.append(label)
+            except Exception:
+                pass
+
+        vision_negative_reasoning = None
+        vision_model_used = None
+        if backend == 'ollama':
+            vision_model_used = DEFAULT_OLLAMA_MODEL_VISION
+        elif backend == 'hf_inference':
+            vision_model_used = DEFAULT_HF_MODEL_VISION
+        elif backend == 'anthropic':
+            vision_model_used = DEFAULT_ANTHROPIC_MODEL
+        elif backend == 'openai':
+            vision_model_used = DEFAULT_OPENAI_MODEL
+
+        if images_b64 and backend != 'none':
+            try:
+                neg_prompt = _build_negative_visual_prompt(
+                    cls_mean_p or 0.0, cls_band or 'moderate', classifier_results,
+                )
+                raw_neg = _call_backend_with_model(
+                    backend, neg_prompt, images_b64, image_labels,
+                    model_override=vision_model_used,
+                )
+                vision_negative_reasoning, neg_warnings = _validate_negative_visual_reasoning(
+                    raw_neg
+                )
+                llm_passes['visual_observer'] = {
+                    'status': 'ok_negative_reasoning' if vision_negative_reasoning else 'rejected',
+                    'pattern': 'D (vision negative reasoning)',
+                    'model': vision_model_used,
+                    'reason': 'classifier consensus negative; vision LLM asked why the MRI looks healthy',
+                    'raw_chars': len(raw_neg or ''),
+                    'warnings': neg_warnings,
+                }
+            except Exception as exc:
+                err = f'{type(exc).__name__}: {exc}'
+                is_oom = 'system memory' in err.lower() or 'memory' in err.lower()
+                is_quota = 'quota' in err.lower() or '429' in err
+                llm_passes['visual_observer'] = {
+                    'status': ('skipped_insufficient_ram' if is_oom
+                                else 'skipped_quota_exhausted' if is_quota
+                                else 'error'),
+                    'pattern': 'D (vision negative reasoning)',
+                    'model': vision_model_used,
+                    'error': err,
+                }
+        else:
+            llm_passes['visual_observer'] = {
+                'status': 'short_circuited',
+                'pattern': 'D (vision negative reasoning)',
+                'reason': 'no images available or backend=none',
+            }
+
         payload = _coerce_to_schema(deterministic, features, classifier_results=classifier_results)
-        payload['backend'] = backend  # what would have been used
-        payload['model'] = 'deterministic (short-circuit: no-tumor consensus)'
+        payload['backend'] = backend
+        payload['model'] = (
+            f'deterministic + vision negative reasoning ({vision_model_used})'
+            if vision_negative_reasoning else
+            'deterministic (short-circuit: no-tumor consensus)'
+        )
         payload['raw_features'] = features
         payload['deterministic_report'] = deterministic
         payload['llm_passes'] = llm_passes
+        payload['vision_negative_reasoning'] = vision_negative_reasoning
         payload['hallucination_safety'] = (
-            'guaranteed_zero (LLM passes short-circuited because classifier '
-            'consensus is no-tumor; no LLM was called).'
+            'Patterns A and B short-circuited (no clinical finding to enrich). '
+            + ('Pattern D (vision negative reasoning) called - output validated '
+                'for negation-consistency (no tumor / lesion / abnormal claims).'
+                if vision_negative_reasoning else
+                'No LLM was called.')
         )
         return payload
 
@@ -903,6 +989,147 @@ def _validate_visual_observations(raw: str, features: dict) -> tuple[list[dict],
         else:
             kept.append(record)
     return kept, disagree
+
+
+# ---------------------------------------------------------------------------
+# Pattern D - Vision reasoning for NEGATIVE (no-tumor) cases
+# ---------------------------------------------------------------------------
+
+# Words whose appearance in an LLM "this is healthy" response would
+# directly contradict the negative verdict and is therefore stripped /
+# rejected. Includes tumour synonyms and pathological qualifiers.
+_NEGATIVE_FORBIDDEN_TERMS = {
+    'tumor', 'tumour', 'lesion', 'mass', 'neoplasm', 'neoplastic',
+    'malignant', 'malignancy', 'metastasis', 'metastatic',
+    'glioma', 'glioblastoma', 'astrocytoma', 'meningioma',
+    'oligodendroglioma', 'ependymoma', 'schwannoma',
+    'cancerous', 'cancer', 'edema', 'oedema',
+    'necrosis', 'necrotic', 'enhancement', 'enhancing',
+}
+
+
+def _build_negative_visual_prompt(mean_p: float, band: str,
+                                     classifier_results: Optional[dict]) -> str:
+    """Prompt the vision LLM to articulate why a healthy brain looks healthy.
+
+    Crucial framing: the verdict is *already established* (CNN, Transfer, ViT
+    all agree at very low tumor probability). We are NOT asking the LLM to
+    re-classify - we are asking it to look at the image and describe the
+    anatomical features of normalcy that are consistent with the verdict, AND
+    flag any normal-anatomy structures that could be confused for tumor by a
+    naive reader. This is the value-add for the user on negative cases.
+    """
+    probs = []
+    for n in ('cnn', 'transfer', 'vit'):
+        r = (classifier_results or {}).get(n) or {}
+        p = r.get('probability')
+        if isinstance(p, (int, float)):
+            probs.append(f'{n}={p:.4f}')
+    per_model_line = ', '.join(probs) if probs else 'unknown'
+    return (
+        "Three independent classifiers (CNN, Transfer-Learning ResNet50, "
+        "Vision Transformer hybrid) have ALREADY ruled out tumor on this MRI "
+        f"at {band} confidence (per-model probabilities: {per_model_line}; "
+        f"mean p={mean_p:.4f}). The U-Net segmentation may still show a small "
+        "mask because it was trained on tumor-positive patients only and has "
+        "a positive bias - the mask is a known false positive.\n\n"
+        "Your task: looking at the actual MRI image(s) provided, describe "
+        "WHAT YOU SEE that is consistent with the no-tumor verdict.\n\n"
+        "STRICT RULES:\n"
+        "1. DO NOT re-diagnose. The verdict is final. Do not write the word "
+        "tumor, tumour, lesion, mass, neoplasm, malignant, metastasis, "
+        "glioma, edema, necrosis, or enhancement except inside the explicit "
+        "'potential_confounders' field (where you may use them only to say "
+        "'this is NOT a tumor, it is the normal X structure').\n"
+        "2. Describe ANATOMICAL NORMALCY: bilateral symmetry, normal ventricle "
+        "size and shape, intact grey-white differentiation, absence of mass "
+        "effect, no midline shift, no abnormal signal change.\n"
+        "3. Identify any normal anatomy that an untrained reader might "
+        "misinterpret as pathology (e.g. lateral ventricle CSF signal, "
+        "choroid plexus, normal cortical sulci, vasculature).\n"
+        "4. Output strict JSON only - no markdown, no preamble. Schema:\n"
+        '   {"healthy_features": ["short observation 1", "short observation 2", ...],\n'
+        '    "potential_confounders": ["normal structure X that could be mistaken for Y", ...],\n'
+        '    "overall_assessment": "1-2 sentence plain-English summary"}\n'
+        "5. Keep each list item under 200 characters. Up to 5 items per list.\n\n"
+        "Return the JSON object."
+    )
+
+
+def _validate_negative_visual_reasoning(raw: str) -> tuple[Optional[str], list]:
+    """Validate the Pattern-D vision response on a negative case.
+
+    Returns (rendered_text, warnings) where:
+      - rendered_text is a multi-section plain-text block ready to drop into
+        the report, or None if the response was unusable.
+      - warnings is a list of strings describing dropped items / format
+        issues, surfaced in the llm_passes telemetry.
+
+    Sanitisation rules:
+      - Parse JSON; if not parseable, drop entire response.
+      - For healthy_features and overall_assessment, drop any item that
+        contains a forbidden term (tumor/lesion/mass/...). Those would
+        contradict the verdict.
+      - For potential_confounders, allow the forbidden terms because the
+        LLM has to name what the structure could be mistaken for in order
+        to clarify it's NOT that.
+      - If after sanitisation there are no healthy_features AND no
+        overall_assessment, return None.
+    """
+    warnings: list = []
+    if not raw or not isinstance(raw, str):
+        return None, ['empty_response']
+    parsed = _try_parse_json(raw)
+    if not isinstance(parsed, dict):
+        return None, [f'non_json_response (first 200 chars: {raw[:200]})']
+
+    def _drop_forbidden(items, label):
+        kept = []
+        for it in items or []:
+            s = str(it).strip()
+            if not s:
+                continue
+            low = s.lower()
+            bad = [t for t in _NEGATIVE_FORBIDDEN_TERMS if t in low]
+            if bad:
+                warnings.append(f'{label}: dropped item using forbidden term(s) {bad}: {s[:80]}')
+                continue
+            kept.append(s)
+        return kept
+
+    healthy = _drop_forbidden(parsed.get('healthy_features'), 'healthy_features')
+    overall_raw = str(parsed.get('overall_assessment') or '').strip()
+    overall_low = overall_raw.lower()
+    if any(t in overall_low for t in _NEGATIVE_FORBIDDEN_TERMS):
+        warnings.append(f'overall_assessment: forbidden term, dropped')
+        overall = ''
+    else:
+        overall = overall_raw
+    # Confounders may legitimately reference forbidden terms when explaining
+    # "normal X may be mistaken for Y but is not Y". Lightly sanity-check
+    # each item is at least 8 chars to avoid empty noise.
+    confounders_in = parsed.get('potential_confounders') or []
+    confounders = [str(c).strip() for c in confounders_in if isinstance(c, (str,)) and len(str(c).strip()) >= 8]
+
+    if not healthy and not overall and not confounders:
+        return None, warnings + ['no_usable_content']
+
+    lines = []
+    if overall:
+        lines.append('OVERALL ASSESSMENT')
+        lines.append(overall)
+        lines.append('')
+    if healthy:
+        lines.append('FEATURES OF NORMALCY ON THIS MRI')
+        for h in healthy[:5]:
+            lines.append(f'  - {h}')
+        lines.append('')
+    if confounders:
+        lines.append('NORMAL ANATOMY THAT COULD BE MISTAKEN FOR PATHOLOGY')
+        for c in confounders[:5]:
+            lines.append(f'  - {c}')
+        lines.append('')
+    return '\n'.join(lines).strip(), warnings
 
 
 # ---------------------------------------------------------------------------

@@ -215,6 +215,32 @@ def _classifier_onnx_path(pt_path):
     return candidate if candidate.exists() else None
 
 
+def _is_grayscale_input(image_bytes, sample_threshold: float = 1.5) -> bool:
+    """Detect single-modality (grayscale-triplicated) inputs.
+
+    Kaggle Brain Tumor MRI is single-modality T1c displayed as an RGB JPEG
+    where R == G == B per pixel. v3 was trained on multi-modal BraTS stacks
+    (T1+T1c+T2+FLAIR) where the channels carry independent information; on a
+    grayscale input v3 has no multi-modal cue and segments imperfectly. The
+    T1c specialist was trained on triplicated T1c channels and is the correct
+    primary for these inputs.
+
+    We sample the mean per-pixel channel deviation and treat anything below
+    `sample_threshold` (out of 255) as grayscale.
+    """
+    try:
+        from PIL import Image as _PIL
+        import io as _io
+        img = _PIL.open(_io.BytesIO(image_bytes)).convert('RGB').resize((64, 64))
+        arr = np.asarray(img, dtype=np.float32)
+        chan_dev = (np.abs(arr[:, :, 0] - arr[:, :, 1])
+                    + np.abs(arr[:, :, 1] - arr[:, :, 2])
+                    + np.abs(arr[:, :, 0] - arr[:, :, 2])) / 3.0
+        return float(chan_dev.mean()) < sample_threshold
+    except Exception:
+        return False
+
+
 def _segment_one(image_bytes, threshold: float, modality: str | None):
     """Single-model segmentation. No cascade logic. Returns the standard
     response dict (success/mask/overlay/tumor_area_px/source_dir) or an error
@@ -261,16 +287,48 @@ def _segment_one(image_bytes, threshold: float, modality: str | None):
         pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((image_size, image_size))
         arr = np.asarray(pil_img, dtype=np.float32) / 255.0
         if norm_mode == 'imagenet':
-            x_np = ((arr - np.array([0.485, 0.456, 0.406], dtype=np.float32))
+            base = ((arr - np.array([0.485, 0.456, 0.406], dtype=np.float32))
                     / np.array([0.229, 0.224, 0.225], dtype=np.float32))
         else:
-            x_np = arr
-        x_np = x_np.transpose(2, 0, 1)[None].astype(np.float32)
-        logits = sess.run(None, {'input': x_np})[0]
-        probs = 1.0 / (1.0 + np.exp(-logits))  # sigmoid
-        probs = probs[0, 0]
+            base = arr
+
+        # Test-time augmentation: average predictions across 4 geometric
+        # transforms (identity, hflip, rot180, hflip+rot180). Each transform
+        # is reversed on the output before averaging, so the mask aligns with
+        # the original image. TTA typically buys 3-5% Dice on out-of-
+        # distribution inputs at 4x inference cost (~150 ms on CUDA).
+        # Disable with TTA_DISABLE=1 for debugging.
+        use_tta = os.environ.get('TTA_DISABLE', '').strip() not in ('1', 'true', 'yes')
+        if use_tta:
+            tta_inputs = [
+                ('id', base),
+                ('hflip', base[:, ::-1, :].copy()),
+                ('rot180', base[::-1, ::-1, :].copy()),
+                ('hflip_rot180', base[::-1, :, :].copy()),
+            ]
+            prob_sum = np.zeros((image_size, image_size), dtype=np.float32)
+            for tag, inp in tta_inputs:
+                x = inp.transpose(2, 0, 1)[None].astype(np.float32)
+                lo = sess.run(None, {'input': x})[0]
+                p = 1.0 / (1.0 + np.exp(-lo))
+                p = p[0, 0]
+                # Reverse the transform on the probability map.
+                if tag == 'hflip':
+                    p = p[:, ::-1]
+                elif tag == 'rot180':
+                    p = p[::-1, ::-1]
+                elif tag == 'hflip_rot180':
+                    p = p[::-1, :]
+                prob_sum += p
+            probs = prob_sum / float(len(tta_inputs))
+        else:
+            x_np = base.transpose(2, 0, 1)[None].astype(np.float32)
+            logits = sess.run(None, {'input': x_np})[0]
+            probs = 1.0 / (1.0 + np.exp(-logits))
+            probs = probs[0, 0]
+
         cfg = {'_source_dir': dir_name, '_normalization': norm_mode,
-               'image_size': image_size}
+               'image_size': image_size, '_tta': use_tta}
         used_runtime = 'onnx'
     else:
         # PyTorch fallback (also takes the original loading path so cfg gets
@@ -299,6 +357,25 @@ def _segment_one(image_bytes, threshold: float, modality: str | None):
             probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
 
     mask_bin = (probs >= float(threshold)).astype(np.uint8) * 255
+    # Largest-component filter: drop small spurious blobs that often appear
+    # on out-of-distribution inputs (Kaggle T1-contrast scans). Keep only
+    # components whose area is at least KEEP_FRACTION of the largest one.
+    # Off when LARGEST_COMPONENT_FILTER_OFF=1 (debug).
+    if os.environ.get('LARGEST_COMPONENT_FILTER_OFF', '').strip() not in ('1', 'true', 'yes'):
+        try:
+            import cv2 as _cv2
+            n, labels, stats, _c = _cv2.connectedComponentsWithStats(mask_bin, connectivity=8)
+            if n > 2:  # 0 is background, 1+ are foreground components
+                areas = stats[1:, _cv2.CC_STAT_AREA]
+                if areas.size:
+                    keep_floor = max(int(0.10 * areas.max()), 5)
+                    cleaned = np.zeros_like(mask_bin)
+                    for i in range(1, n):
+                        if stats[i, _cv2.CC_STAT_AREA] >= keep_floor:
+                            cleaned[labels == i] = 255
+                    mask_bin = cleaned
+        except Exception:
+            pass
     tumor_area_px = int((mask_bin > 0).sum())
 
     rgb = (arr * 255).astype(np.uint8)
@@ -367,10 +444,23 @@ def segment_image(image_bytes, threshold=0.5, modality: str | None = None):
             }
         return result
 
-    # Default path: v3 first.
-    primary = _segment_one(image_bytes, threshold, modality=None)
+    # Default path: pick primary model based on input modality detection.
+    # Grayscale-triplicated inputs (Kaggle, single-modality T1c uploads, etc.)
+    # are better handled by the T1c specialist which was trained on exactly
+    # that. Multi-channel inputs go to v3 which expects multi-modal stacks.
+    grayscale_detected = _is_grayscale_input(image_bytes)
+    t1c_dir = MODALITY_DIRS.get('t1c')
+    t1c_present = (t1c_dir is not None and (
+        (t1c_dir / 'best_model.pt').exists()
+        or (t1c_dir / 'best_model.onnx').exists()
+    ))
+    if grayscale_detected and t1c_present:
+        primary = _segment_one(image_bytes, threshold, modality='t1c')
+    else:
+        primary = _segment_one(image_bytes, threshold, modality=None)
     if not primary.get('success'):
         return primary
+    primary['_grayscale_input'] = grayscale_detected
 
     primary_area = int(primary.get('tumor_area_px', 0))
     primary_mean_prob = float(primary.get('mean_prob_in_mask') or 0.0)
@@ -380,16 +470,17 @@ def segment_image(image_bytes, threshold=0.5, modality: str | None = None):
         or (specialist_ckpt / 'best_model.onnx').exists()
     ))
 
-    # v3 found a confident chunk of tumor: no cascade needed.
+    # Primary found a confident chunk of tumor: no cascade fallback needed.
     primary_confident = (primary_area >= CASCADE_MIN_AREA_PX
                           and primary_mean_prob >= CASCADE_MIN_MEAN_PROB)
     if primary_confident or not specialist_available:
         if primary_confident:
-            reason = 'v3_sufficient'
+            reason = ('grayscale_routed_to_t1c_sufficient' if grayscale_detected
+                       else 'v3_sufficient')
         elif not specialist_available:
             reason = 'specialist_unavailable'
         else:
-            reason = 'v3_only'
+            reason = 'primary_only'
         primary['cascade'] = {
             'used': primary.get('source_dir'),
             'tried': [primary.get('source_dir')],
@@ -397,6 +488,7 @@ def segment_image(image_bytes, threshold=0.5, modality: str | None = None):
             'primary_mean_prob': primary_mean_prob,
             'specialist_area_px': None,
             'reason': reason,
+            'grayscale_input': grayscale_detected,
         }
         return primary
 
@@ -1368,6 +1460,11 @@ def _ensure_onnx_models_downloaded():
     the cache instantly.
     """
     repo = os.environ.get('HF_MODELS_REPO', 'Tubai01/neurolens-models')
+    # ONNX weights are required for fast forward inference. Classifier .pt
+    # weights are OPTIONAL - they enable real Grad-CAM via PyTorch autograd
+    # on Spaces (instead of the occlusion-sensitivity fallback). Pulled only
+    # if SPACES_DOWNLOAD_PT=1 is set, since torch is a ~250 MB install that
+    # we keep out of the default Spaces image.
     needed = [
         # (local target relative to ROOT_DIR, repo-relative path)
         ('segmentation_artifacts/attention_unet_v3/best_model.onnx',
@@ -1381,6 +1478,12 @@ def _ensure_onnx_models_downloaded():
         ('real_eval_current/vit/best_weights.onnx',
          'vit/best_weights.onnx'),
     ]
+    if os.environ.get('SPACES_DOWNLOAD_PT', '').strip() in ('1', 'true', 'yes'):
+        needed += [
+            ('real_eval_current/cnn/best_weights.pt', 'cnn/best_weights.pt'),
+            ('real_eval_current/transfer/best_weights.pt', 'transfer/best_weights.pt'),
+            ('real_eval_current/vit/best_weights.pt', 'vit/best_weights.pt'),
+        ]
     missing = [(loc, rep) for loc, rep in needed if not (ROOT_DIR / loc).exists()]
     if not missing:
         logger.info('all_onnx_models_already_present')

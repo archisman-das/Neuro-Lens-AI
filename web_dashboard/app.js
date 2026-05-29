@@ -310,6 +310,7 @@ class NeuroLensApp {
                     isPositive: r.label === 'tumor',
                     status: r.label === 'tumor' ? 'positive' : 'negative',
                     gradcam: r.gradcam || null,
+                    gradcam_heatmap: r.gradcam_heatmap || null,
                     image: r.image || null,
                     probability: r.probability,
                     weights: r.weights || null,
@@ -548,7 +549,12 @@ class NeuroLensApp {
         const overlayImg = document.getElementById('overlayImage');
         const placeholder = document.getElementById('vizPlaceholder');
         if (bestModel && bestModel.gradcam) {
-            heatmapImg.src = bestModel.gradcam;
+            // Distinct images per tab. gradcam_heatmap is the pure colormap
+            // (no MRI blended in) - shown on the "Grad-CAM" tab. gradcam is
+            // the heatmap-blended-with-MRI - shown on the "Grad-CAM Overlay"
+            // tab. Falling back to the overlay if the backend didn't split
+            // (e.g. legacy TF .h5 path).
+            heatmapImg.src = bestModel.gradcam_heatmap || bestModel.gradcam;
             overlayImg.src = bestModel.gradcam;
             heatmapImg.dataset.available = 'true';
             overlayImg.dataset.available = 'true';
@@ -857,6 +863,7 @@ class NeuroLensApp {
             isPositive: p.result.label === 'tumor',
             status: p.result.label === 'tumor' ? 'positive' : 'negative',
             gradcam: p.result.gradcam || null,
+            gradcam_heatmap: p.result.gradcam_heatmap || null,
             image: p.result.image || null,
             probability: p.result.probability,
             runtime: p.result.runtime || null,

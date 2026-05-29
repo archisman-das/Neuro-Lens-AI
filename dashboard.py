@@ -968,16 +968,26 @@ def predict_image(model_name, image_bytes):
     #      record the prediction drop. This is a forward-only saliency
     #      method that gives a Grad-CAM-like map without needing autograd.
     #   3. Legacy TF .h5 -> traditional Grad-CAM via tf.expand_dims path.
+    # gradcam keeps the overlay data URL for back-compat callers; the new
+    # gradcam_heatmap field holds the pure-colormap version (no MRI mixed in)
+    # so the UI's "Grad-CAM" tab shows the heatmap and the "Grad-CAM Overlay"
+    # tab shows the blended version - previously both tabs were assigned the
+    # same overlay URL, defeating the point of having two tabs.
     result['gradcam'] = None
+    result['gradcam_heatmap'] = None
     result['gradcam_method'] = None
     try:
         if backend == 'torch' and model_name in ('cnn', 'transfer', 'vit'):
-            result['gradcam'] = _torch_gradcam_data_url(model, model_name, image_array, normalize_imagenet, device)
+            pair = _torch_gradcam_data_url(model, model_name, image_array, normalize_imagenet, device)
+            if isinstance(pair, dict):
+                result['gradcam'] = pair.get('overlay')
+                result['gradcam_heatmap'] = pair.get('heatmap')
             result['gradcam_method'] = 'grad-cam'
         elif runtime == 'onnx' and onnx_path is not None:
-            result['gradcam'] = _onnx_occlusion_saliency_data_url(
-                sess, image_array, normalize_imagenet,
-            )
+            pair = _onnx_occlusion_saliency_data_url(sess, image_array, normalize_imagenet)
+            if isinstance(pair, dict):
+                result['gradcam'] = pair.get('overlay')
+                result['gradcam_heatmap'] = pair.get('heatmap')
             result['gradcam_method'] = 'occlusion-sensitivity'
         elif backend == 'tf' and model_name in ('cnn', 'transfer'):
             import tensorflow as tf  # lazy: only needed for legacy .h5 path
@@ -988,10 +998,12 @@ def predict_image(model_name, image_bytes):
             buf = io.BytesIO()
             Image.fromarray(overlay).save(buf, format='PNG')
             result['gradcam'] = 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
+            result['gradcam_heatmap'] = result['gradcam']  # tf path didn't split; keep same
             result['gradcam_method'] = 'grad-cam-tf'
     except Exception as exc:
         logger.warning('saliency_failed model=%s err=%s', model_name, exc)
         result['gradcam'] = None
+        result['gradcam_heatmap'] = None
         result['gradcam_method'] = None
 
     return result
@@ -1051,9 +1063,20 @@ def _onnx_occlusion_saliency_data_url(sess, image_array_0_255: np.ndarray,
     colored = _viridis_rgb(heat / 255.0)
     overlay = (0.5 * image_array_0_255.astype(np.float32) + 0.5 * colored.astype(np.float32))
     overlay = np.clip(overlay, 0, 255).astype(np.uint8)
-    buf = io.BytesIO()
-    Image.fromarray(overlay).save(buf, format='PNG')
-    return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
+    return _heat_and_overlay_to_data_urls(colored, overlay)
+
+
+def _heat_and_overlay_to_data_urls(heatmap_rgb: np.ndarray, overlay_rgb: np.ndarray):
+    """Encode both the pure heatmap (no MRI underneath) and the blended
+    overlay into PNG data URLs. Used by both the PyTorch Grad-CAM path and
+    the ONNX occlusion-sensitivity path so the frontend can show distinct
+    images in the 'Grad-CAM' and 'Grad-CAM Overlay' tabs.
+    """
+    def _enc(arr_rgb):
+        buf = io.BytesIO()
+        Image.fromarray(arr_rgb).save(buf, format='PNG')
+        return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
+    return {'heatmap': _enc(heatmap_rgb), 'overlay': _enc(overlay_rgb)}
 
 
 def _viridis_rgb(arr01: np.ndarray) -> np.ndarray:
@@ -1137,10 +1160,7 @@ def _torch_gradcam_data_url(model, model_name: str, image_array_0_255: np.ndarra
     colored = _viridis_rgb(heat / 255.0)
     overlay = (0.5 * image_array_0_255.astype(np.float32) + 0.5 * colored.astype(np.float32))
     overlay = np.clip(overlay, 0, 255).astype(np.uint8)
-
-    buf = io.BytesIO()
-    Image.fromarray(overlay).save(buf, format='PNG')
-    return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
+    return _heat_and_overlay_to_data_urls(colored, overlay)
 
 
 class DashboardHandler(SimpleHTTPRequestHandler):

@@ -1643,6 +1643,19 @@ class NeuroLensApp {
      */
     addRecentScan(entry) {
         if (!this._recentScans) this._recentScans = [];
+        // Attach a snapshot of the current view state so clicking the item
+        // later can restore the full Results page (currentResults +
+        // currentSegmentation + currentExplanation + imageDataUrl). For
+        // batch entries the scan id starts with 'BATCH-' and is restored
+        // via viewBatchEntry() which already does the lookup.
+        if (!entry.snapshot && !String(entry.id || '').startsWith('BATCH-')) {
+            entry.snapshot = {
+                currentResults: this.currentResults,
+                currentSegmentation: this.currentSegmentation,
+                currentExplanation: this.currentExplanation || null,
+                imageDataUrl: this.imageDataUrl,
+            };
+        }
         this._recentScans.unshift(entry);
         if (this._recentScans.length > 8) this._recentScans.length = 8;
         this.renderRecentScans();
@@ -1660,7 +1673,7 @@ class NeuroLensApp {
             const tumor = s.isPositive;
             const ago = this.formatRelativeTime(s.timestamp);
             return `
-                <div class="recent-item" data-scan-id="${this.escapeHtml(s.id)}">
+                <div class="recent-item" data-scan-id="${this.escapeHtml(s.id)}" role="button" tabindex="0" title="Click to reopen this analysis">
                     <div class="recent-icon ${tumor ? 'tumor' : 'normal'}">${tumor ? 'T' : 'N'}</div>
                     <div class="recent-info">
                         <span class="recent-id">${this.escapeHtml(s.id)}</span>
@@ -1669,6 +1682,44 @@ class NeuroLensApp {
                     <span class="recent-status ${tumor ? 'positive' : 'negative'}">${tumor ? 'Tumor' : 'Normal'}</span>
                 </div>`;
         }).join('');
+
+        // Bind clicks. We rebuild on every render so old handlers are
+        // dropped along with the old DOM.
+        el.querySelectorAll('.recent-item').forEach(node => {
+            const scanId = node.dataset.scanId;
+            const handler = () => this.viewRecentScan(scanId);
+            node.addEventListener('click', handler);
+            node.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handler();
+                }
+            });
+        });
+    }
+
+    /** Reopen a previously-analysed scan from the Recent Scans sidebar. */
+    viewRecentScan(scanId) {
+        if (!scanId) return;
+        // Batch entries restore through the existing viewBatchEntry path so
+        // we don't duplicate the snapshot-restore logic.
+        if (String(scanId).startsWith('BATCH-')) {
+            return this.viewBatchEntry(scanId);
+        }
+        const entry = (this._recentScans || []).find(s => s.id === scanId);
+        if (!entry || !entry.snapshot) {
+            this.showToast('Snapshot unavailable',
+                'This scan was added before the snapshot feature was wired up. Re-run the analysis to reopen it.', 'error');
+            return;
+        }
+        const snap = entry.snapshot;
+        if (snap.currentResults) this.currentResults = snap.currentResults;
+        if (snap.currentSegmentation) this.currentSegmentation = snap.currentSegmentation;
+        if (snap.currentExplanation !== undefined) this.currentExplanation = snap.currentExplanation;
+        if (snap.imageDataUrl) this.imageDataUrl = snap.imageDataUrl;
+        if (this.currentResults) {
+            this.displayResults();
+        }
     }
 
     formatRelativeTime(ms) {

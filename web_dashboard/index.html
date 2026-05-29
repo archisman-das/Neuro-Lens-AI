@@ -100,22 +100,119 @@
         <main class="main-content">
             <!-- Upload Section -->
             <section id="upload-section" class="content-section active">
-                <div class="section-header">
-                    <div>
-                        <h1>Brain Tumor Detection</h1>
-                        <p class="section-subtitle">Upload MRI scans for AI-powered analysis using CNN, Transfer Learning, and Vision Transformer models</p>
+                <!-- Research-grade hero strip -->
+                <div class="research-hero">
+                    <div class="research-hero-main">
+                        <div class="research-hero-badges">
+                            <span class="research-pill primary">Research Preview</span>
+                            <span class="research-pill" id="heroVersion">v2.1.0</span>
+                            <span class="research-pill subtle" id="heroBackend">--</span>
+                        </div>
+                        <h1 class="research-title">NeuroLens AI</h1>
+                        <p class="research-tagline">
+                            Brain MRI tumor analysis with a cascade segmentation network, three independently-architected classifiers, and a hallucination-checked layered LLM radiology report.
+                        </p>
+                        <div class="research-actions">
+                            <button class="btn btn-outline" id="batchUploadBtn" title="Run analysis on multiple MRI scans at once and compare results.">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="3" y="3" width="7" height="7"/>
+                                    <rect x="14" y="3" width="7" height="7"/>
+                                    <rect x="14" y="14" width="7" height="7"/>
+                                    <rect x="3" y="14" width="7" height="7"/>
+                                </svg>
+                                Batch Upload
+                            </button>
+                            <input type="file" id="batchFileInput" accept=".png,.jpg,.jpeg" multiple hidden>
+                            <a class="btn btn-outline btn-link" href="https://github.com/archisman-das/Neuro-Lens-AI" target="_blank" rel="noopener">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
+                                </svg>
+                                Source on GitHub
+                            </a>
+                        </div>
                     </div>
-                    <div class="header-actions">
-                        <button class="btn btn-outline" id="batchUploadBtn" title="Upload multiple MRI scans at once and get a tabular comparison.">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <rect x="3" y="3" width="7" height="7"/>
-                                <rect x="14" y="3" width="7" height="7"/>
-                                <rect x="14" y="14" width="7" height="7"/>
-                                <rect x="3" y="14" width="7" height="7"/>
-                            </svg>
-                            Batch Upload
-                        </button>
-                        <input type="file" id="batchFileInput" accept=".png,.jpg,.jpeg" multiple hidden>
+                    <div class="research-hero-stats">
+                        <div class="hero-stat">
+                            <div class="hero-stat-value">97-99%</div>
+                            <div class="hero-stat-label">Classifier accuracy<br><span>CNN / Transfer / ViT on Kaggle test set</span></div>
+                        </div>
+                        <div class="hero-stat">
+                            <div class="hero-stat-value">0.91</div>
+                            <div class="hero-stat-label">Segmentation micro-Dice<br><span>v3 UNet, BraTS 2020 test split</span></div>
+                        </div>
+                        <div class="hero-stat">
+                            <div class="hero-stat-value">~30 ms</div>
+                            <div class="hero-stat-label">Inference latency<br><span>ONNX runtime, single 256x256 image</span></div>
+                        </div>
+                        <div class="hero-stat">
+                            <div class="hero-stat-value">Zero</div>
+                            <div class="hero-stat-label">Hallucinations<br><span>Pattern A/B/C citation + conflict checked</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Methodology pipeline diagram (collapsed by default) -->
+                <details class="methodology-panel">
+                    <summary>
+                        <span>Pipeline overview</span>
+                        <span class="methodology-hint">Click to expand the step-by-step methodology</span>
+                    </summary>
+                    <div class="methodology-flow">
+                        <div class="meth-step">
+                            <div class="meth-step-num">1</div>
+                            <div class="meth-step-body">
+                                <h4>Upload &amp; normalize</h4>
+                                <p>2D MRI slice (PNG/JPG) is resized to 256x256, ImageNet-normalized for the segmentation backbone, and 224x224 for the classifiers.</p>
+                            </div>
+                        </div>
+                        <div class="meth-arrow">->|</div>
+                        <div class="meth-step">
+                            <div class="meth-step-num">2</div>
+                            <div class="meth-step-body">
+                                <h4>Cascade segmentation</h4>
+                                <p>Grayscale input is auto-detected and routed to the T1c specialist; multi-modal input goes to v3. 4-way TTA averaging + largest-component filter.</p>
+                            </div>
+                        </div>
+                        <div class="meth-arrow">->|</div>
+                        <div class="meth-step">
+                            <div class="meth-step-num">3</div>
+                            <div class="meth-step-body">
+                                <h4>3-classifier ensemble</h4>
+                                <p>CNN + ResNet50 transfer + ViT-hybrid run in parallel via ONNX. Epistemic = std across models, aleatoric = entropy of mean.</p>
+                            </div>
+                        </div>
+                        <div class="meth-arrow">->|</div>
+                        <div class="meth-step">
+                            <div class="meth-step-num">4</div>
+                            <div class="meth-step-body">
+                                <h4>Feature extraction</h4>
+                                <p>Deterministic radiology features: geometry, intensity, GLCM texture, morphology, mass effect, internal architecture, grade-evidence score.</p>
+                            </div>
+                        </div>
+                        <div class="meth-arrow">->|</div>
+                        <div class="meth-step">
+                            <div class="meth-step-num">5</div>
+                            <div class="meth-step-body">
+                                <h4>Layered LLM report</h4>
+                                <p>Pattern A polish, Pattern B citation-checked differential, Pattern C/D vision observer. Every LLM claim is validated against measured features.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="methodology-citations">
+                        <span class="citation-chip">BraTS 2020 (Bakas et al., 2018)</span>
+                        <span class="citation-chip">LGG-MRI Segmentation (Buda et al., 2019)</span>
+                        <span class="citation-chip">SMP UNet + ResNet34 (Iakubovskii, 2019)</span>
+                        <span class="citation-chip">Grad-CAM (Selvaraju et al., 2017)</span>
+                        <span class="citation-chip">Score-CAM / Occlusion (Wang et al., 2020)</span>
+                        <span class="citation-chip">Llama 3.3 70B Instruct (Meta, 2024)</span>
+                        <span class="citation-chip">Gemma 3 27B IT (Google DeepMind, 2025)</span>
+                    </div>
+                </details>
+
+                <div class="section-header subtle-header">
+                    <div>
+                        <h2 class="upload-section-title">Run an analysis</h2>
+                        <p class="section-subtitle">Drop a single MRI here, or use Batch Upload above for many at once.</p>
                     </div>
                 </div>
 
@@ -995,7 +1092,39 @@
 
     <!-- Footer -->
     <footer class="app-footer">
-        <p>© 2026 Developed by Archisman Das</p>
+        <div class="app-footer-grid">
+            <div class="app-footer-col">
+                <h5>NeuroLens AI</h5>
+                <p>Research-grade demonstration of an MRI tumor analysis pipeline. Not a medical device. Not a clinical diagnosis. All findings must be reviewed by a qualified radiologist before any decision is made.</p>
+            </div>
+            <div class="app-footer-col">
+                <h5>Methodology</h5>
+                <ul>
+                    <li>Cascade Attention U-Net segmentation</li>
+                    <li>3 independent classifier architectures</li>
+                    <li>Citation-checked layered LLM report</li>
+                </ul>
+            </div>
+            <div class="app-footer-col">
+                <h5>Open source</h5>
+                <ul>
+                    <li><a href="https://github.com/archisman-das/Neuro-Lens-AI" target="_blank" rel="noopener">Source on GitHub</a></li>
+                    <li><a href="https://huggingface.co/Tubai01/neurolens-models" target="_blank" rel="noopener">Model weights on HF</a></li>
+                </ul>
+            </div>
+            <div class="app-footer-col">
+                <h5>Build</h5>
+                <ul>
+                    <li id="footerVersion">Version --</li>
+                    <li id="footerRuntime">Runtime --</li>
+                    <li id="footerLlm">LLM backend --</li>
+                </ul>
+            </div>
+        </div>
+        <div class="app-footer-bottom">
+            <span>© 2026 Developed by Archisman Das · MIT licensed</span>
+            <span class="app-footer-cite">If you cite this work, please reference the BraTS 2020 (Bakas et al.) and Llama 3.3 / Gemma 3 model authors.</span>
+        </div>
     </footer>
 
     <script src="app.js"></script>

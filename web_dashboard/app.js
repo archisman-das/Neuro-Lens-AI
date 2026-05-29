@@ -1720,6 +1720,21 @@ class NeuroLensApp {
                 const t = new Date();
                 lastUpdated.textContent = `updated ${t.getHours().toString().padStart(2,'0')}:${t.getMinutes().toString().padStart(2,'0')}`;
             }
+
+            // Surface version + backend in the research hero and footer.
+            const heroVersion = document.getElementById('heroVersion');
+            const heroBackend = document.getElementById('heroBackend');
+            const footerVersion = document.getElementById('footerVersion');
+            const footerRuntime = document.getElementById('footerRuntime');
+            const footerLlm = document.getElementById('footerLlm');
+            if (heroVersion && s.version) heroVersion.textContent = `v${s.version.replace(/^v/, '')}`;
+            const backendLabel = llm.hf_inference_token_present
+                ? 'LLM via HuggingFace Inference Providers'
+                : (llm.anthropic_token_present ? 'LLM via Anthropic' : 'Deterministic-only mode');
+            if (heroBackend) heroBackend.textContent = backendLabel;
+            if (footerVersion) footerVersion.textContent = `Version ${s.version || '--'}`;
+            if (footerRuntime) footerRuntime.textContent = `Runtime ${ortOk ? `ONNX ${provider}` : 'PyTorch'}`;
+            if (footerLlm) footerLlm.textContent = `LLM backend ${backendLabel}`;
         } catch (err) {
             if (list) {
                 list.innerHTML = `

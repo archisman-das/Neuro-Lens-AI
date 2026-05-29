@@ -1,16 +1,23 @@
-# Spaces-deploy requirements - minimal runtime stack only.
+# Spaces-deploy requirements.
 #
-# What we DO ship:
+# Stack (lean, free-tier friendly):
 #   - numpy / pillow / opencv-headless: image processing for feature extraction
 #   - scikit-image: GLCM + entropy texture features
-#   - onnxruntime: classifier + segmentation inference (no torch needed in prod)
+#   - onnxruntime: classifier + segmentation forward inference
 #   - requests: HF Inference Providers + Ollama HTTP clients
+#   - huggingface_hub: pulls model weights at boot from a separate Model repo
+#   - torch (CPU-only) + torchvision: only on disk so predict_image can do
+#       real Grad-CAM via PyTorch autograd on the classifiers when the .pt
+#       checkpoints are present (SPACES_DOWNLOAD_PT=1 secret enables that
+#       download). ONNX is still preferred for the forward pass; .pt is
+#       loaded lazily on the Grad-CAM path. Pulled from the dedicated CPU
+#       wheel index so we don't accidentally drag in 800+ MB of CUDA tooling.
 #
-# What we DO NOT ship (kept out to fit the free Spaces image quickly):
-#   - torch, torchvision: training only, not needed for ONNX inference
-#   - tensorflow: legacy .h5 path is unreachable
-#   - segmentation_models_pytorch: only needed for the .pt loader
-#   - matplotlib, jupyter, monai, albumentations, etc.: dev-only
+# Not shipped (training-only or unreachable from request handlers):
+#   - tensorflow, segmentation_models_pytorch, matplotlib, monai, ...
+
+# CPU-only PyTorch wheels - much smaller than the default CUDA ones.
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 numpy>=1.26,<3.0
 pillow>=10.0
@@ -21,7 +28,6 @@ requests>=2.31
 onnx>=1.16
 onnxruntime>=1.18
 pyyaml>=6.0
-# huggingface_hub: pulls ONNX weights from the separate Tubai01/neurolens-models
-# Model repo on container boot (we don't bundle them inside the Space repo
-# because the Space free-tier cap is 1 GB total).
 huggingface_hub>=0.24
+torch>=2.0
+torchvision>=0.15

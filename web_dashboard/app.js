@@ -100,7 +100,25 @@ class NeuroLensApp {
         if (generateBtn) {
             generateBtn.addEventListener('click', () => this.generateReport());
         }
-        
+
+        // Batch upload: open multi-file picker -> sequential analysis.
+        const batchBtn = document.getElementById('batchUploadBtn');
+        const batchInput = document.getElementById('batchFileInput');
+        if (batchBtn && batchInput) {
+            batchBtn.addEventListener('click', () => batchInput.click());
+            batchInput.addEventListener('change', (e) => {
+                if (e.target.files && e.target.files.length) {
+                    this.runBatchAnalysis(Array.from(e.target.files));
+                }
+                // reset so the same file can be re-selected
+                e.target.value = '';
+            });
+        }
+        const batchClearBtn = document.getElementById('batchClearBtn');
+        if (batchClearBtn) batchClearBtn.addEventListener('click', () => this.clearBatch());
+        const batchExportCsvBtn = document.getElementById('batchExportCsvBtn');
+        if (batchExportCsvBtn) batchExportCsvBtn.addEventListener('click', () => this.exportBatchCsv());
+
         // Tab switching
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', (e) => this.handleTabClick(e));
@@ -679,6 +697,224 @@ class NeuroLensApp {
      * 3-pattern LLM pipeline), then renders the full explanation panel
      * inline inside #reportContent.
      */
+    /**
+     * Batch upload: process N files sequentially through the same /predict
+     * + /segment pipeline used by Run Analysis, then render a comparison
+     * table on the Upload section. Each row is clickable to deep-link into
+     * the full Results view for that file. The selected backend / threshold
+     * / model from the Upload form are honored for the whole batch.
+     */
+    async runBatchAnalysis(files) {
+        if (!this._batchResults) this._batchResults = [];
+        const panel = document.getElementById('batchPanel');
+        const progressWrap = document.getElementById('batchProgressWrap');
+        const progressFill = document.getElementById('batchProgressFill');
+        const progressText = document.getElementById('batchProgressText');
+        const tbody = document.getElementById('batchTableBody');
+        const subtitle = document.getElementById('batchSubtitle');
+        if (panel) panel.style.display = 'block';
+        if (progressWrap) progressWrap.style.display = 'block';
+        if (subtitle) subtitle.textContent = `${files.length} file${files.length === 1 ? '' : 's'} queued ...`;
+
+        // Read upload form choices once so the whole batch uses the same setup.
+        const modelSelect = document.getElementById('modelSelect');
+        const modelChoice = modelSelect ? (modelSelect.value || 'all') : 'all';
+        const segModalitySel = document.getElementById('segModelSelect');
+        const segModality = segModalitySel ? segModalitySel.value : '';
+        const thresholdInput = document.getElementById('thresholdSlider');
+        const threshold = thresholdInput ? (parseInt(thresholdInput.value, 10) / 100) : 0.5;
+
+        // Sequential processing keeps the small server stable. Cheap rows
+        // (CPU-bound /predict on CNN classifier alone) finish in ~50 ms; a
+        // full /predict 'all' + /segment is ~1-1.5 s. With N=8 the batch
+        // completes in ~10 s.
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            if (progressText) progressText.textContent = `Processing ${i + 1} / ${files.length} - ${file.name}`;
+            if (progressFill) progressFill.style.width = `${((i) / files.length) * 100}%`;
+            const tStart = performance.now();
+            try {
+                const modelsToCall = modelChoice === 'all' ? ['cnn', 'transfer', 'vit'] : [modelChoice];
+                const predictions = await Promise.all(modelsToCall.map(m =>
+                    this.callPredict(m, file)
+                        .then(result => ({ model: m, result, error: null }))
+                        .catch(err => ({ model: m, result: null, error: err.message || String(err) }))
+                ));
+                const seg = await this.callSegment(file, threshold, segModality)
+                    .then(result => ({ result, error: null }))
+                    .catch(err => ({ result: null, error: err.message || String(err) }));
+
+                const probs = predictions
+                    .map(p => (p.result && typeof p.result.probability === 'number') ? p.result.probability : null)
+                    .filter(p => p != null);
+                const mean = probs.length ? probs.reduce((a, b) => a + b, 0) / probs.length : null;
+                const std = (probs.length >= 2 && mean != null)
+                    ? Math.sqrt(probs.reduce((a, b) => a + (b - mean) * (b - mean), 0) / probs.length) : null;
+                const safeM = mean == null ? null : Math.min(Math.max(mean, 1e-9), 1 - 1e-9);
+                const entropy = safeM == null ? null
+                    : -safeM * Math.log2(safeM) - (1 - safeM) * Math.log2(1 - safeM);
+
+                let verdict = 'mixed', band = 'low';
+                if (probs.length >= 3 && mean != null) {
+                    const allAbove = probs.every(p => p >= 0.5);
+                    const allBelow = probs.every(p => p <= 0.5);
+                    if (mean >= 0.7 && allAbove) { verdict = 'tumor'; band = mean >= 0.9 ? 'high' : 'moderate'; }
+                    else if (mean <= 0.3 && allBelow) { verdict = 'no_tumor'; band = mean <= 0.1 ? 'high' : 'moderate'; }
+                }
+
+                const elapsed = (performance.now() - tStart) / 1000;
+                const best = predictions
+                    .filter(p => p.result)
+                    .reduce((acc, p) => (!acc || (p.result.confidence > acc.result.confidence) ? p : acc), null);
+                const scanId = `BATCH-${Date.now()}-${i}`;
+                const entry = {
+                    id: scanId, filename: file.name,
+                    predictions, segmentation: seg,
+                    mean, std, entropy, verdict, band,
+                    bestModel: best ? best.model : '--',
+                    elapsedSeconds: elapsed.toFixed(2),
+                    timestamp: Date.now(),
+                };
+                this._batchResults.push(entry);
+                this.renderBatchRow(tbody, entry);
+                // Also push to Recent Scans sidebar so it's discoverable.
+                this.addRecentScan({
+                    id: scanId,
+                    isPositive: verdict === 'tumor',
+                    confidence: mean || 0,
+                    timestamp: Date.now(),
+                });
+            } catch (err) {
+                console.error('Batch entry failed:', err);
+            }
+            if (progressFill) progressFill.style.width = `${((i + 1) / files.length) * 100}%`;
+        }
+        if (progressText) progressText.textContent = `Done. ${this._batchResults.length} total in batch.`;
+        if (subtitle) {
+            const tumorCount = this._batchResults.filter(e => e.verdict === 'tumor').length;
+            const noTumorCount = this._batchResults.filter(e => e.verdict === 'no_tumor').length;
+            const mixedCount = this._batchResults.length - tumorCount - noTumorCount;
+            subtitle.textContent = `${this._batchResults.length} scans: ${tumorCount} tumor, ${noTumorCount} no-tumor, ${mixedCount} ambiguous.`;
+        }
+    }
+
+    renderBatchRow(tbody, e) {
+        if (!tbody) return;
+        const idx = this._batchResults.length;
+        const row = document.createElement('tr');
+        row.dataset.batchId = e.id;
+        const verdictBadge = `<span class="batch-verdict ${e.verdict}">${this.escapeHtml(e.verdict)}</span>`;
+        const meanStr = e.mean == null ? '--' : e.mean.toFixed(3);
+        const stdStr = e.std == null ? '--' : e.std.toFixed(3);
+        const entStr = e.entropy == null ? '--' : e.entropy.toFixed(3);
+        row.innerHTML = `
+            <td>${idx}</td>
+            <td title="${this.escapeHtml(e.filename)}">${this.escapeHtml(e.filename.length > 36 ? e.filename.slice(0, 33) + '...' : e.filename)}</td>
+            <td><span class="batch-diag ${e.verdict === 'tumor' ? 'positive' : (e.verdict === 'no_tumor' ? 'negative' : 'mixed')}">${e.verdict === 'tumor' ? 'Tumor' : (e.verdict === 'no_tumor' ? 'No Tumor' : 'Mixed')}</span></td>
+            <td>${this.escapeHtml(this.getModelLabel(e.bestModel))}</td>
+            <td>${meanStr}</td>
+            <td>${stdStr}</td>
+            <td>${entStr}</td>
+            <td>${verdictBadge} <span class="batch-band">${this.escapeHtml(e.band || '')}</span></td>
+            <td>${e.elapsedSeconds}s</td>
+            <td><button class="btn btn-small btn-outline" data-batch-view="${e.id}">View</button></td>
+        `;
+        const viewBtn = row.querySelector('[data-batch-view]');
+        if (viewBtn) viewBtn.addEventListener('click', () => this.viewBatchEntry(e.id));
+        tbody.appendChild(row);
+    }
+
+    viewBatchEntry(id) {
+        const entry = (this._batchResults || []).find(e => e.id === id);
+        if (!entry) return;
+        // Rebuild the displayResults-compatible payload from the batch entry.
+        const meanProb = entry.mean;
+        const labelMap = { cnn: 'CNN (Fast)', transfer: 'Transfer Learning', vit: 'Vision Transformer' };
+        const modelResults = entry.predictions.filter(p => p.result).map(p => ({
+            model: p.model,
+            modelLabel: labelMap[p.model] || p.model,
+            prediction: p.result.display_label || (p.result.label === 'tumor' ? 'Tumor' : 'No Tumor'),
+            confidence: p.result.confidence,
+            accuracy: null, auc: null,
+            isPositive: p.result.label === 'tumor',
+            status: p.result.label === 'tumor' ? 'positive' : 'negative',
+            gradcam: p.result.gradcam || null,
+            image: p.result.image || null,
+            probability: p.result.probability,
+            runtime: p.result.runtime || null,
+        }));
+        const bestModel = modelResults.length
+            ? modelResults.reduce((a, b) => (b.confidence > a.confidence ? b : a)) : null;
+        const robustness = meanProb == null ? null : (Math.max(meanProb, 1 - meanProb) - 0.5) * 2;
+        this.currentResults = {
+            patientId: entry.id,
+            timestamp: new Date(entry.timestamp).toLocaleString(),
+            models: modelResults,
+            bestModel,
+            diagnosis: entry.verdict === 'tumor' ? 'Tumor Detected' : 'No Tumor Detected',
+            isPositive: entry.verdict === 'tumor',
+            confidence: bestModel ? bestModel.confidence : 0,
+            processingTime: entry.elapsedSeconds,
+            consensus: { verdict: entry.verdict, mean: meanProb, band: entry.band },
+            uncertainty: { epistemic: entry.std, aleatoric: entry.entropy },
+            robustness,
+        };
+        this.currentSegmentation = entry.segmentation || { result: null, error: null };
+        // We don't carry the raw image data URL across batch entries; leave
+        // imageDataUrl unset so the Visualization placeholder explains.
+        this.imageDataUrl = entry.predictions.find(p => p.result && p.result.image)?.result?.image || null;
+        this.displayResults();
+    }
+
+    clearBatch() {
+        this._batchResults = [];
+        const panel = document.getElementById('batchPanel');
+        if (panel) panel.style.display = 'none';
+        const tbody = document.getElementById('batchTableBody');
+        if (tbody) tbody.innerHTML = '';
+    }
+
+    exportBatchCsv() {
+        const rows = this._batchResults || [];
+        if (!rows.length) {
+            this.showToast('Nothing to export', 'Run a batch upload first.', 'error');
+            return;
+        }
+        const header = ['index', 'filename', 'verdict', 'band', 'mean_probability',
+                         'std_probability', 'entropy', 'best_model',
+                         'cnn_p', 'transfer_p', 'vit_p', 'elapsed_seconds', 'timestamp'];
+        const lines = [header.join(',')];
+        rows.forEach((e, i) => {
+            const get = (m) => {
+                const p = e.predictions.find(x => x.model === m);
+                return (p && p.result && typeof p.result.probability === 'number')
+                    ? p.result.probability.toFixed(4) : '';
+            };
+            const cells = [
+                i + 1,
+                `"${(e.filename || '').replace(/"/g, '""')}"`,
+                e.verdict || '',
+                e.band || '',
+                e.mean == null ? '' : e.mean.toFixed(4),
+                e.std == null ? '' : e.std.toFixed(4),
+                e.entropy == null ? '' : e.entropy.toFixed(4),
+                e.bestModel || '',
+                get('cnn'), get('transfer'), get('vit'),
+                e.elapsedSeconds || '',
+                new Date(e.timestamp).toISOString(),
+            ];
+            lines.push(cells.join(','));
+        });
+        const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `neurolens_batch_${Date.now()}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+        this.showToast('CSV exported', `${rows.length} row${rows.length === 1 ? '' : 's'} saved.`, 'success');
+    }
+
     async generateReport() {
         if (!this.currentFile) {
             this.showToast('Upload an image first', 'Run Analysis on an MRI before requesting the report.', 'error');

@@ -106,7 +106,7 @@
                         <p class="section-subtitle">Upload MRI scans for AI-powered analysis using CNN, Transfer Learning, and Vision Transformer models</p>
                     </div>
                     <div class="header-actions">
-                        <button class="btn btn-outline" id="batchUploadBtn">
+                        <button class="btn btn-outline" id="batchUploadBtn" title="Upload multiple MRI scans at once and get a tabular comparison.">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="3" y="3" width="7" height="7"/>
                                 <rect x="14" y="3" width="7" height="7"/>
@@ -115,6 +115,51 @@
                             </svg>
                             Batch Upload
                         </button>
+                        <input type="file" id="batchFileInput" accept=".png,.jpg,.jpeg" multiple hidden>
+                    </div>
+                </div>
+
+                <!-- Batch results panel (appears after batch upload) -->
+                <div class="batch-panel" id="batchPanel" style="display:none;">
+                    <div class="batch-header">
+                        <div>
+                            <h2>Batch Analysis</h2>
+                            <p class="batch-subtitle" id="batchSubtitle">--</p>
+                        </div>
+                        <div class="batch-actions">
+                            <button class="btn btn-outline" id="batchExportCsvBtn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7 10 12 15 17 10"/>
+                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                                Export CSV
+                            </button>
+                            <button class="btn btn-outline" id="batchClearBtn">Clear</button>
+                        </div>
+                    </div>
+                    <div class="batch-progress" id="batchProgressWrap" style="display:none;">
+                        <div class="batch-progress-bar"><div class="batch-progress-fill" id="batchProgressFill"></div></div>
+                        <span class="batch-progress-text" id="batchProgressText">Processing 0 / 0</span>
+                    </div>
+                    <div class="batch-table-wrap">
+                        <table class="batch-table">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>File</th>
+                                    <th>Diagnosis</th>
+                                    <th>Best model</th>
+                                    <th>Mean p</th>
+                                    <th>Epistemic</th>
+                                    <th>Aleatoric</th>
+                                    <th>Verdict</th>
+                                    <th>Time</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="batchTableBody"></tbody>
+                        </table>
                     </div>
                 </div>
 

@@ -1744,6 +1744,88 @@ body::before {
     line-height: 1.55;
 }
 
+/* Batch upload panel */
+.batch-panel {
+    margin-top: 24px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-lg);
+    padding: 22px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+.batch-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border-soft);
+}
+.batch-header h2 { margin: 0 0 4px 0; font-size: 18px; color: var(--text-strong); }
+.batch-subtitle { margin: 0; font-size: 13px; color: var(--text-muted); }
+.batch-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.batch-progress { margin-bottom: 14px; }
+.batch-progress-bar {
+    height: 6px;
+    background: var(--bg-subtle);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-bottom: 6px;
+}
+.batch-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary), #7c3aed);
+    transition: width 250ms ease;
+    width: 0;
+}
+.batch-progress-text { font-size: 12px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+.batch-table-wrap { overflow-x: auto; }
+.batch-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.batch-table thead th {
+    text-align: left;
+    padding: 10px 8px;
+    background: var(--bg-subtle);
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border-soft);
+    white-space: nowrap;
+}
+.batch-table tbody td {
+    padding: 10px 8px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: middle;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-body);
+}
+.batch-table tbody tr:hover { background: var(--bg-subtle); }
+.batch-diag {
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 11.5px;
+}
+.batch-diag.positive { background: #fee2e2; color: #991b1b; }
+.batch-diag.negative { background: #d1fae5; color: #065f46; }
+.batch-diag.mixed { background: #fef3c7; color: #92400e; }
+.batch-verdict {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-subtle);
+    color: var(--text-strong);
+}
+.batch-band { font-size: 10.5px; color: var(--text-muted); margin-left: 4px; }
+
 /* Loading Overlay - Enhanced */
 .loading-overlay {
     position: fixed;

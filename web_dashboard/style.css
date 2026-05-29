@@ -2151,3 +2151,123 @@ body::before {
         min-width: 800px;
     }
 }
+
+/* ===========================================================================
+   Research-grade refresh (additive, applied after the base sheet so it wins).
+   Replaces the consumer-y purple gradient background with a clean clinical
+   neutral, tightens typography, professionalises sidebar widgets.
+   =========================================================================== */
+:root {
+    --bg-base: #f4f6fb;
+    --bg-elevated: #ffffff;
+    --bg-subtle: #eef1f7;
+    --text-strong: #0f172a;
+    --text-body: #334155;
+    --text-muted: #64748b;
+    --border-soft: #e2e8f0;
+    --accent: #1d4ed8;
+    --accent-soft: #dbeafe;
+}
+body {
+    background: var(--bg-base);
+    background-attachment: scroll;
+    color: var(--text-body);
+    font-feature-settings: "ss01" on, "cv01" on;
+}
+.topbar {
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border-soft);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.sidebar {
+    background: var(--bg-elevated);
+    border-right: 1px solid var(--border-soft);
+}
+.main-content { background: var(--bg-base); }
+.sidebar-title {
+    color: var(--text-strong);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.sidebar-sublabel {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    text-transform: none;
+}
+.recent-empty {
+    padding: 14px 12px;
+    border: 1px dashed var(--border-soft);
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    font-size: 12.5px;
+    text-align: center;
+}
+.system-status .status-item {
+    background: var(--bg-subtle);
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    font-size: 12.5px;
+    color: var(--text-body);
+}
+.system-status .status-item .status-value {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--text-strong);
+}
+.status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.status-dot.online { background: var(--success); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18); }
+.status-dot.warning { background: var(--warning); box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18); }
+.status-dot.offline { background: var(--danger); box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15); }
+
+/* Toast (info / error). Strictly text + chevron color, no emoji. */
+.nl-toast {
+    position: fixed;
+    top: 24px;
+    right: 24px;
+    background: var(--bg-elevated);
+    color: var(--text-strong);
+    padding: 14px 18px;
+    border-radius: var(--radius-md);
+    border-left: 3px solid var(--accent);
+    box-shadow: var(--shadow-lg);
+    max-width: 360px;
+    z-index: 1100;
+    transition: opacity 220ms ease, transform 220ms ease;
+}
+.nl-toast-error { border-left-color: var(--danger); }
+.nl-toast-success { border-left-color: var(--success); }
+.nl-toast-title { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.nl-toast-desc { font-size: 12.5px; color: var(--text-body); margin: 0; line-height: 1.45; }
+.nl-toast-exit { opacity: 0; transform: translateY(-6px); }
+
+/* Print stylesheet: hide chrome, expose just the result panel.
+   Lets a researcher hit Ctrl+P after running an analysis and get a clean
+   one-page radiology-style report PDF via the OS print dialog. */
+@media print {
+    .topbar, .sidebar, .header-actions, .preview-controls,
+    .panel-tabs, .viz-tabs, #batchUploadBtn, #newAnalysisBtn,
+    #runSegmentationBtn, #runExplainBtn, #explainRaw,
+    .loading-overlay, .nl-toast { display: none !important; }
+    body, .main-content, .app-shell { background: white !important; }
+    main, .results-panel, .explain-panel {
+        box-shadow: none !important;
+        border: 1px solid #d1d5db !important;
+        page-break-inside: avoid;
+    }
+    .explain-impression p, .explain-recommendation p,
+    .confidence-band { background: transparent !important; }
+    a[href]:after { content: ""; }  /* no inline URLs cluttering printout */
+}

@@ -2,9 +2,14 @@ import json
 import os
 import re
 import sys
+import time
+import uuid
+import gzip
+import logging
+import threading
 import urllib.parse
 import argparse
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 
@@ -12,6 +17,23 @@ from PIL import Image
 import numpy as np
 import base64
 import io
+
+# ---------------------------------------------------------------------------
+# Logging - one structured-ish line per request, sent to stdout (Spaces-friendly).
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=os.environ.get('LOG_LEVEL', 'INFO').upper(),
+    format='%(asctime)s %(levelname)s %(name)s | %(message)s',
+    stream=sys.stdout,
+)
+logger = logging.getLogger('neurolens.dashboard')
+
+# Server version surfaced via /version and X-Server-Version header. Updated
+# manually when shipping a notable change so the frontend can detect mismatches.
+SERVER_VERSION = '2.1.0-onnx'
+
+# Track when the server process started for /health uptime.
+PROCESS_START_TS = time.time()
 # TensorFlow is only needed for the legacy .h5 classifier branch (Grad-CAM
 # via tf.expand_dims). Since all current checkpoints are PyTorch .pt, TF is
 # imported lazily inside predict_image() instead of at module load. This lets
@@ -43,6 +65,17 @@ MODALITY_DIRS = {
 }
 MODEL_CACHE = {}
 SEG_CACHE = {}
+# ONNX runtime sessions, keyed by .onnx path. Separate from the PyTorch caches
+# because ONNX sessions hold GPU memory through onnxruntime, not torch's
+# allocator, so we don't want them to participate in the torch cache evictor.
+ONNX_CACHE: dict = {}
+
+# Set ONNX_DISABLE=1 to force the PyTorch path (useful for Grad-CAM-heavy
+# debugging or when you suspect an ONNX-vs-PyTorch numerical discrepancy on a
+# new export). Default: prefer ONNX whenever a .onnx sibling exists next to
+# the .pt checkpoint. Grad-CAM always falls back to PyTorch regardless of this
+# flag because ONNX has no autograd.
+USE_ONNX = os.environ.get('ONNX_DISABLE', '').strip() not in ('1', 'true', 'yes')
 
 sys.path.append(str(ROOT_DIR))
 
@@ -127,40 +160,134 @@ def _load_segmentation_model(modality: str | None = None):
 CASCADE_MIN_AREA_PX = 25
 
 
+def _get_onnx_session(onnx_path):
+    """Return a cached onnxruntime InferenceSession for the given .onnx path.
+
+    Sessions are reused across requests (model load is the expensive part).
+    Provider preference: CUDA -> CPU. We don't enable TensorRT by default
+    because its build-time graph compilation adds 30+ seconds to the first
+    request, which would hurt the user-perceived 'first inference' latency.
+    """
+    onnx_path = str(onnx_path)
+    sess = ONNX_CACHE.get(onnx_path)
+    if sess is not None:
+        return sess
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return None
+    providers = []
+    avail = ort.get_available_providers()
+    if 'CUDAExecutionProvider' in avail:
+        providers.append('CUDAExecutionProvider')
+    providers.append('CPUExecutionProvider')
+    so = ort.SessionOptions()
+    # Optimization level: ALL = constant folding + fusion + memory planning.
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    so.log_severity_level = 3  # silence the routine memcpy / EP warnings
+    sess = ort.InferenceSession(onnx_path, sess_options=so, providers=providers)
+    ONNX_CACHE[onnx_path] = sess
+    return sess
+
+
+def _segmentation_onnx_path(pt_path):
+    """Return the .onnx sibling if it exists. Conventional name is the same
+    basename with .onnx (produced by scripts/export_onnx.py)."""
+    p = Path(pt_path)
+    candidate = p.with_suffix('.onnx')
+    return candidate if candidate.exists() else None
+
+
+def _classifier_onnx_path(pt_path):
+    """Same convention for classifier .pt files (best_weights.pt -> best_weights.onnx)."""
+    p = Path(pt_path)
+    candidate = p.with_suffix('.onnx')
+    return candidate if candidate.exists() else None
+
+
 def _segment_one(image_bytes, threshold: float, modality: str | None):
     """Single-model segmentation. No cascade logic. Returns the standard
     response dict (success/mask/overlay/tumor_area_px/source_dir) or an error
     dict if no checkpoint exists for the requested modality.
+
+    Inference backend selection:
+      - If a sibling .onnx file exists next to the resolved .pt AND USE_ONNX
+        is True, run via onnxruntime (CUDA EP if available, else CPU EP).
+        ~3x faster than PyTorch cold path, ~equal once warm.
+      - Otherwise fall back to PyTorch. The PyTorch path is also used when
+        Grad-CAM is later requested (autograd needed).
     """
     import io
     import base64
     import numpy as np
-    import torch
     from PIL import Image
 
-    loaded = _load_segmentation_model(modality=modality)
-    if loaded is None:
+    weights_path, dir_name = _resolve_segmentation_weights(modality)
+    if weights_path is None:
         return {
             'success': False,
             'error': 'Segmentation weights not found.',
             'hint': 'Run `python src/train_segmentation_torch.py` to train the Attention U-Net first.',
         }
-    model, device, cfg = loaded
-    image_size = int(cfg.get('image_size', 256))
 
-    pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((image_size, image_size))
-    arr = np.asarray(pil_img, dtype=np.float32) / 255.0
+    onnx_path = _segmentation_onnx_path(weights_path) if USE_ONNX else None
+    used_runtime = 'pytorch'
 
-    if cfg.get('_normalization') == 'imagenet':
-        norm = arr.copy()
-        norm = (norm - np.array([0.485, 0.456, 0.406], dtype=np.float32)) / \
-                np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        x = torch.from_numpy(norm.transpose(2, 0, 1)).unsqueeze(0).to(device)
+    if onnx_path is not None:
+        # ONNX fast path. We don't need to load the PyTorch checkpoint at all
+        # for the forward pass; we just need the cfg-style metadata (image
+        # size, normalization). We default to the v2/v3 ImageNet stack since
+        # all current .onnx exports came from SMP UNets with that pretraining.
+        sess = _get_onnx_session(onnx_path)
+        if sess is None:
+            onnx_path = None  # onnxruntime missing -> fall through to PyTorch
+    if onnx_path is not None:
+        sess = _get_onnx_session(onnx_path)
+        image_size = 256  # all current .onnx exports were taken at 256x256
+        # The lgg / attention_unet baselines were trained with 0-1 rescale,
+        # the SMP-style models (v2/v3/t1c) expect ImageNet normalisation.
+        norm_mode = 'rescale_255' if dir_name in ('attention_unet', 'attention_unet_lgg') else 'imagenet'
+
+        pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((image_size, image_size))
+        arr = np.asarray(pil_img, dtype=np.float32) / 255.0
+        if norm_mode == 'imagenet':
+            x_np = ((arr - np.array([0.485, 0.456, 0.406], dtype=np.float32))
+                    / np.array([0.229, 0.224, 0.225], dtype=np.float32))
+        else:
+            x_np = arr
+        x_np = x_np.transpose(2, 0, 1)[None].astype(np.float32)
+        logits = sess.run(None, {'input': x_np})[0]
+        probs = 1.0 / (1.0 + np.exp(-logits))  # sigmoid
+        probs = probs[0, 0]
+        cfg = {'_source_dir': dir_name, '_normalization': norm_mode,
+               'image_size': image_size}
+        used_runtime = 'onnx'
     else:
-        x = torch.from_numpy(arr.transpose(2, 0, 1)).unsqueeze(0).to(device)
-    with torch.no_grad():
-        logits = model(x)
-        probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
+        # PyTorch fallback (also takes the original loading path so cfg gets
+        # populated from the checkpoint, including any custom image_size).
+        import torch
+        loaded = _load_segmentation_model(modality=modality)
+        if loaded is None:
+            return {
+                'success': False,
+                'error': 'Segmentation weights not found.',
+                'hint': 'Run `python src/train_segmentation_torch.py` first.',
+            }
+        model, device, cfg = loaded
+        image_size = int(cfg.get('image_size', 256))
+        pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((image_size, image_size))
+        arr = np.asarray(pil_img, dtype=np.float32) / 255.0
+        if cfg.get('_normalization') == 'imagenet':
+            norm = arr.copy()
+            norm = (norm - np.array([0.485, 0.456, 0.406], dtype=np.float32)) / \
+                    np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            x = torch.from_numpy(norm.transpose(2, 0, 1)).unsqueeze(0).to(device)
+        else:
+            x = torch.from_numpy(arr.transpose(2, 0, 1)).unsqueeze(0).to(device)
+        with torch.no_grad():
+            logits = model(x)
+            probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
+
     mask_bin = (probs >= float(threshold)).astype(np.uint8) * 255
     tumor_area_px = int((mask_bin > 0).sum())
 
@@ -186,6 +313,7 @@ def _segment_one(image_bytes, threshold: float, modality: str | None):
         'success': True,
         'model': 'attention_unet',
         'source_dir': cfg.get('_source_dir', 'attention_unet'),
+        'runtime': used_runtime,  # 'onnx' (preferred) or 'pytorch' (fallback)
         'threshold': float(threshold),
         'image_size': image_size,
         'mask': _encode_png(mask_bin),
@@ -607,7 +735,30 @@ def predict_image(model_name, image_bytes):
         MODEL_CACHE[cache_key] = cached
 
     backend, model, device, normalize_imagenet = cached
-    if backend == 'torch':
+
+    # Forward pass: prefer ONNX runtime when a .onnx sibling exists.
+    # ONNX gives ~3x lower latency on CUDA for the classifier head and is the
+    # primary win on CPU (Spaces deployment) where PyTorch is materially slower.
+    # We still need the PyTorch model on hand for the Grad-CAM step below
+    # (autograd), so the model stays loaded either way.
+    runtime = 'pytorch'
+    onnx_path = _classifier_onnx_path(weights_path) if USE_ONNX else None
+    if onnx_path is not None:
+        sess = _get_onnx_session(onnx_path)
+        if sess is None:
+            onnx_path = None
+    if onnx_path is not None:
+        arr = image_array / 255.0
+        if normalize_imagenet:
+            arr = (arr - np.array([0.485, 0.456, 0.406], dtype=np.float32)) / \
+                  np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        x_np = arr.transpose(2, 0, 1)[None].astype(np.float32)
+        logits = sess.run(None, {'input': x_np})[0]
+        # CNN/Transfer return shape (1,1); ViT may return (1,) - flatten safely.
+        logit = float(np.asarray(logits).reshape(-1)[0])
+        score = float(1.0 / (1.0 + np.exp(-logit)))
+        runtime = 'onnx'
+    elif backend == 'torch':
         import torch
         arr = image_array / 255.0
         if normalize_imagenet:
@@ -627,6 +778,7 @@ def predict_image(model_name, image_bytes):
         'label': label,
         'display_label': 'Tumor detected' if label == 'tumor' else 'No tumor detected',
         'weights': str(weights_path.name),
+        'runtime': runtime,  # 'onnx' or 'pytorch' - which backend produced the score
     }
 
     # Attach original uploaded image as data URL
@@ -725,8 +877,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, directory=None, **kwargs):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
+    # ---- Per-request observability hooks --------------------------------
+    def setup(self):
+        super().setup()
+        # Request ID: trust the client's X-Request-ID if present (good for
+        # tracing through a CDN / proxy), else generate one.
+        self._request_id = self.headers.get('X-Request-ID') if hasattr(self, 'headers') else None
+        if not self._request_id:
+            self._request_id = uuid.uuid4().hex[:12]
+        self._req_start = time.perf_counter()
+
+    def _log_request(self, status: int, extra: str = ''):
+        elapsed_ms = (time.perf_counter() - self._req_start) * 1000
+        logger.info(
+            'req_id=%s method=%s path=%s status=%d duration_ms=%.1f %s',
+            getattr(self, '_request_id', '-'),
+            self.command, self.path, status, elapsed_ms, extra,
+        )
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == '/health':
+            self.respond_json({'status': 'ok',
+                                'uptime_seconds': round(time.time() - PROCESS_START_TS, 1),
+                                'version': SERVER_VERSION}); return
+        if parsed.path == '/version':
+            self.respond_json({'version': SERVER_VERSION,
+                                'python': sys.version.split()[0]}); return
+        if parsed.path == '/status':
+            self.respond_json(_get_status_snapshot()); return
         if parsed.path == '/metrics':
             self.respond_json(load_model_metrics())
             return
@@ -919,30 +1098,171 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def respond_json(self, data, status=200):
         payload = json.dumps(data).encode('utf-8')
+        # gzip for non-trivial payloads when the client supports it. Saves
+        # 60-80% on bandwidth for /explain (which carries base64-PNG dumps).
+        accept_enc = self.headers.get('Accept-Encoding', '')
+        gzipped = False
+        if len(payload) > 1024 and 'gzip' in accept_enc.lower():
+            payload = gzip.compress(payload)
+            gzipped = True
+
+        elapsed_ms = (time.perf_counter() - self._req_start) * 1000
+
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
+        if gzipped:
+            self.send_header('Content-Encoding', 'gzip')
         self.send_header('Content-Length', str(len(payload)))
+        self.send_header('X-Request-ID', self._request_id)
+        self.send_header('X-Server-Version', SERVER_VERSION)
+        self.send_header('X-Inference-Time-ms', f'{elapsed_ms:.1f}')
+        # CORS - allow the dashboard hosted on Spaces to talk to itself across
+        # any prefix the platform proxies through.
+        self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(payload)
+        self._log_request(status, extra=f'gzipped={gzipped} size_kb={len(payload)/1024:.1f}')
 
     def log_message(self, format, *args):
+        # Suppress the default per-line stderr from BaseHTTPRequestHandler;
+        # we emit our own structured logs in respond_json / handlers.
         return
 
 
-def run(port=8501):
+def _get_status_snapshot() -> dict:
+    """Real /status endpoint: what models are actually loaded, real GPU memory,
+    classifier weight presence. Replaces the previous mock UI 'System Status'
+    block (which showed hard-coded '3/3 models, 4.2/8 GB GPU, 2 pending').
+    """
+    snap: dict = {
+        'version': SERVER_VERSION,
+        'uptime_seconds': round(time.time() - PROCESS_START_TS, 1),
+        'classifiers': {},
+        'segmentation_models': [],
+        'onnx_runtime': {'available': False, 'providers': [], 'sessions_loaded': 0},
+        'gpu': {'available': False},
+        'llm': {
+            'ollama_text_model': os.environ.get('OLLAMA_MODEL_TEXT', 'qwen2.5:1.5b'),
+            'ollama_vision_model': os.environ.get('OLLAMA_MODEL_VISION', 'qwen2.5vl:3b'),
+            'hf_inference_token_present': bool(os.environ.get('HF_TOKEN')),
+            'anthropic_token_present': bool(os.environ.get('ANTHROPIC_API_KEY')),
+        },
+    }
+    # Classifier weight presence (and which runtime would be used).
+    for m in MODEL_TYPES:
+        pt = find_weights_path(m)
+        if pt:
+            onnx = _classifier_onnx_path(pt) if pt.suffix == '.pt' else None
+            snap['classifiers'][m] = {
+                'pt': str(pt.name), 'pt_size_mb': round(pt.stat().st_size / 1e6, 1),
+                'onnx': onnx.name if onnx else None,
+                'preferred_runtime': 'onnx' if (onnx and USE_ONNX) else 'pytorch',
+            }
+        else:
+            snap['classifiers'][m] = {'pt': None, 'preferred_runtime': None}
+    # Segmentation model directories (which exist and which have ONNX siblings).
+    for d in SEGMENTATION_DIRS + list(MODALITY_DIRS.values()):
+        pt = d / 'best_model.pt'
+        if pt.exists():
+            onnx = _segmentation_onnx_path(pt)
+            snap['segmentation_models'].append({
+                'dir': d.name,
+                'pt_size_mb': round(pt.stat().st_size / 1e6, 1),
+                'onnx': onnx.name if onnx else None,
+                'preferred_runtime': 'onnx' if (onnx and USE_ONNX) else 'pytorch',
+            })
+    # ONNX runtime telemetry.
+    try:
+        import onnxruntime as ort
+        snap['onnx_runtime'] = {
+            'available': True,
+            'version': ort.__version__,
+            'providers': ort.get_available_providers(),
+            'sessions_loaded': len(ONNX_CACHE),
+        }
+    except ImportError:
+        pass
+    # GPU memory (PyTorch path).
+    try:
+        import torch
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            snap['gpu'] = {
+                'available': True,
+                'name': torch.cuda.get_device_name(0),
+                'memory_used_mb': round((total - free) / 1e6, 1),
+                'memory_total_mb': round(total / 1e6, 1),
+                'memory_free_mb': round(free / 1e6, 1),
+            }
+    except Exception:
+        pass
+    return snap
+
+
+def _warm_models_async():
+    """Pre-load ONNX sessions for the cascade pair (v3 + T1c) and the 3
+    classifiers in a background thread so the first /predict and /segment
+    requests don't pay the cold-start tax (~200-500 ms each).
+
+    Failure is silent: if a model file isn't there or onnxruntime can't open
+    it, we just log and move on - the request path will surface a real error
+    if needed.
+    """
+    def _warm():
+        t0 = time.perf_counter()
+        warmed = 0
+        # Classifiers
+        for m in MODEL_TYPES:
+            pt = find_weights_path(m)
+            if pt:
+                onnx = _classifier_onnx_path(pt)
+                if onnx and USE_ONNX:
+                    if _get_onnx_session(onnx) is not None:
+                        warmed += 1
+        # Segmentation cascade pair
+        for d in [ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v3',
+                   MODALITY_DIRS.get('t1c')]:
+            if d is None:
+                continue
+            pt = d / 'best_model.pt'
+            if pt.exists():
+                onnx = _segmentation_onnx_path(pt)
+                if onnx and USE_ONNX:
+                    if _get_onnx_session(onnx) is not None:
+                        warmed += 1
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.info('model_warmup_complete sessions=%d duration_ms=%.1f', warmed, elapsed_ms)
+
+    threading.Thread(target=_warm, name='neurolens-warmup', daemon=True).start()
+
+
+def run(port=8501, host: str = ''):
     if not WEB_DIR.exists():
         raise FileNotFoundError(f'Web dashboard files not found: {WEB_DIR}')
 
-    address = ('', port)
-    server = HTTPServer(address, DashboardHandler)
-    url = f'http://localhost:{port}/'
+    address = (host, port)
+    # ThreadingHTTPServer: parallel requests don't queue behind each other.
+    # Important when a slow /explain LLM call would otherwise block /predict
+    # or /health probes from the Spaces orchestrator.
+    server = ThreadingHTTPServer(address, DashboardHandler)
+    url = f'http://localhost:{port}/' if not host else f'http://{host}:{port}/'
+    logger.info('neurolens_dashboard_starting version=%s url=%s', SERVER_VERSION, url)
+    _warm_models_async()
     print(f'NeuroLens AI dashboard running at {url}')
-    print('Open this URL in your browser. Press Ctrl+C here to stop the server.')
+    print(f'Version: {SERVER_VERSION}.  Endpoints: /predict /segment /explain '
+          '/metrics /status /health /version.')
+    print('Press Ctrl+C here to stop the server.')
     server.serve_forever()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run the NeuroLens AI HTML dashboard')
-    parser.add_argument('--port', type=int, default=8501)
+    # Defaults are env-driven so the Spaces Dockerfile can override without
+    # touching the CLI. HF Spaces sets PORT=7860 on Docker SDK and expects
+    # the container to bind 0.0.0.0; local dev uses 8501 on localhost.
+    parser.add_argument('--port', type=int,
+                         default=int(os.environ.get('PORT', '8501')))
+    parser.add_argument('--host', type=str,
+                         default=os.environ.get('HOST', ''))
     args = parser.parse_args()
-    run(args.port)
+    run(args.port, host=args.host)

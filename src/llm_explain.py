@@ -178,6 +178,33 @@ def explain(
         payload['hallucination_safety'] = 'guaranteed_zero (no LLM was called)'
         return payload
 
+    # Short-circuit: when the classifier consensus is firmly NO_TUMOR (all
+    # three models agree at >=moderate confidence), there is no clinical
+    # finding to enrich. Calling the LLM here only risks it inventing a
+    # tumor narrative around the false-positive U-Net mask - which it
+    # frequently does even with our citation guards, because the polish
+    # prompt asks it to rephrase the impression. Skip all three LLM passes,
+    # return the verdict-aware deterministic report.
+    cls_verdict, cls_mean_p, cls_band = _classifier_consensus(classifier_results)
+    if cls_verdict == 'no_tumor' and cls_band in ('high', 'moderate'):
+        skip_reason = (
+            f'classifier_consensus_no_tumor (mean p={cls_mean_p:.3f}, '
+            f'{cls_band} confidence) - no clinical finding to enrich.'
+        )
+        for k in ('polish', 'differential_expansion', 'visual_observer'):
+            llm_passes[k] = {'status': 'short_circuited', 'reason': skip_reason}
+        payload = _coerce_to_schema(deterministic, features, classifier_results=classifier_results)
+        payload['backend'] = backend  # what would have been used
+        payload['model'] = 'deterministic (short-circuit: no-tumor consensus)'
+        payload['raw_features'] = features
+        payload['deterministic_report'] = deterministic
+        payload['llm_passes'] = llm_passes
+        payload['hallucination_safety'] = (
+            'guaranteed_zero (LLM passes short-circuited because classifier '
+            'consensus is no-tumor; no LLM was called).'
+        )
+        return payload
+
     model_used = (os.environ.get('OLLAMA_MODEL', DEFAULT_OLLAMA_MODEL) if backend == 'ollama'
                   else f'{DEFAULT_HF_MODEL_TEXT} + {DEFAULT_HF_MODEL_VISION}' if backend == 'hf_inference'
                   else DEFAULT_ANTHROPIC_MODEL if backend == 'anthropic'
@@ -1334,6 +1361,37 @@ def _try_parse_json(raw: str):
         return None
 
 
+def _classifier_consensus(classifier_results: Optional[dict]) -> tuple:
+    """Compute the binary-classifier majority verdict.
+
+    Returns (verdict, mean_probability, confidence_band):
+      verdict           - 'tumor' | 'no_tumor' | 'mixed' | None
+      mean_probability  - mean of per-model tumor probabilities, or None
+      confidence_band   - 'high' | 'moderate' | 'low' | None
+    """
+    if not classifier_results:
+        return None, None, None
+    probs = []
+    for _name, r in classifier_results.items():
+        if not isinstance(r, dict):
+            continue
+        p = r.get('probability')
+        if isinstance(p, (int, float)):
+            probs.append(float(p))
+    if not probs:
+        return None, None, None
+    mean_p = sum(probs) / len(probs)
+    all_above = all(p >= 0.5 for p in probs)
+    all_below = all(p <= 0.5 for p in probs)
+    if mean_p >= 0.7 and all_above:
+        band = 'high' if mean_p >= 0.9 else 'moderate'
+        return 'tumor', mean_p, band
+    if mean_p <= 0.3 and all_below:
+        band = 'high' if mean_p <= 0.1 else 'moderate'
+        return 'no_tumor', mean_p, band
+    return 'mixed', mean_p, 'low'
+
+
 def _local_narrative(features: dict, classifier_results: Optional[dict],
                       error_note: Optional[str] = None) -> dict:
     """Structured radiology-style report grounded ONLY in measured features.
@@ -1356,21 +1414,59 @@ def _local_narrative(features: dict, classifier_results: Optional[dict],
     qual = features.get('quality') or {}
     overall = features.get('overall_confidence') or {}
 
-    # ---- IMPRESSION (one-line top of report) ------------------------------
-    if geom.get('area_px', 0) == 0:
+    # ---- CLASSIFIER CONSENSUS (drives the impression framing) -------------
+    # The 3 binary classifiers vote on tumor / no-tumor. When they agree with
+    # high confidence, the segmentation mask should be interpreted IN LIGHT OF
+    # that vote - a small false-positive mask must not be narrated as if it
+    # were a real lesion, and an empty mask must not be narrated as if the
+    # classifiers found nothing either. Verdict thresholds:
+    #   mean_p >= 0.7 with all 3 also >= 0.5: tumor (high if all >= 0.9)
+    #   mean_p <= 0.3 with all 3 also <= 0.5: no_tumor (high if all <= 0.1)
+    #   anything else: mixed/ambiguous
+    cls_verdict, cls_mean_p, cls_band = _classifier_consensus(classifier_results)
+    area_px = geom.get('area_px', 0) or 0
+    area_mm = geom.get('area_mm2', 0) or 0
+
+    # ---- IMPRESSION (one-line top of report, consensus-aware) -------------
+    if cls_verdict == 'no_tumor' and cls_mean_p is not None:
+        if area_px > 0:
+            impression = (
+                f'NO tumor detected. Per classifier consensus (mean tumor-probability '
+                f'{cls_mean_p:.3f}, {cls_band} confidence), this scan is interpreted as '
+                f'NEGATIVE. The U-Net segmentation produced a {area_px:,} px '
+                f'({area_mm:.0f} mm^2) region which, in the absence of any classifier '
+                f'support, is treated as a probable false positive and NOT a clinical '
+                f'finding.'
+            )
+        else:
+            impression = (
+                f'NO tumor detected. All three classifiers and the segmentation model '
+                f'agree (mean tumor-probability {cls_mean_p:.3f}, {cls_band} confidence).'
+            )
+    elif cls_verdict == 'tumor' and area_px == 0:
+        impression = (
+            f'CLASSIFIER-SEGMENTER DISAGREEMENT. Classifier consensus indicates tumor '
+            f'(mean probability {cls_mean_p:.3f}, {cls_band} confidence) but the '
+            f'segmentation model returned no mask. This is an ambiguous case; '
+            f'a radiologist review is required before any interpretation.'
+        )
+    elif area_px == 0:
         impression = 'No segmentable tumor region was identified by the model on this image.'
     else:
-        size_mm = geom.get('area_mm2', 0)
-        size_phrase = (f'a {size_mm:.0f} mm^2 lesion' if size_mm
-                       else f'a {geom.get("area_px", 0):,} px lesion')
+        size_phrase = (f'a {area_mm:.0f} mm^2 lesion' if area_mm else f'a {area_px:,} px lesion')
         loc_phrase = (f' in the {loc.get("hemisphere", "")} hemisphere'
                       + (f', {loc.get("approximate_lobe_hint", "")}'
                          if loc.get('approximate_lobe_hint') else ''))
-        confidence_phrase = (f'; overall model confidence {overall.get("band", "n/a")} '
-                             f'({(overall.get("score_0_to_1") or 0):.2f})')
+        cls_phrase = (f' Classifier consensus: tumor ({cls_mean_p:.3f}, {cls_band} confidence).'
+                      if cls_verdict == 'tumor'
+                      else f' Classifier consensus: ambiguous (mean probability {cls_mean_p:.3f}).'
+                      if cls_verdict == 'mixed'
+                      else '')
+        confidence_phrase = (f' Overall model confidence {overall.get("band", "n/a")} '
+                             f'({(overall.get("score_0_to_1") or 0):.2f}).')
         impression = (f'Automated detection of {size_phrase}{loc_phrase}. '
-                      f'Radiographic grade-evidence band: {grade.get("evidence_band", "n/a")}'
-                      f'{confidence_phrase}.')
+                      f'Radiographic grade-evidence band: {grade.get("evidence_band", "n/a")}.'
+                      f'{cls_phrase}{confidence_phrase}')
 
     # ---- FINDINGS (structured per-domain) ---------------------------------
     findings = {
@@ -1396,6 +1492,47 @@ def _local_narrative(features: dict, classifier_results: Optional[dict],
     # ---- QUALITY + CONFIDENCE ---------------------------------------------
     confidence = _narrate_confidence_v2(overall, qual, mb, geom)
 
+    # Verdict-aware recommendation. The previous code always used
+    # overall_confidence.action_recommendation which is derived from the
+    # classifier mean / Grad-CAM alignment / quality - it ignored the binary
+    # verdict. When the classifiers say NO_TUMOR with high confidence, the
+    # recommendation must say so explicitly, not "findings are well supported".
+    if cls_verdict == 'no_tumor' and cls_band == 'high':
+        recommendation = (
+            f'No tumor reported. All classifiers agree (mean p={cls_mean_p:.3f}). '
+            f'No further action required from this output; correlate with clinical '
+            f'history if symptoms persist.'
+        )
+    elif cls_verdict == 'no_tumor':
+        recommendation = (
+            f'Classifier consensus is no-tumor (mean p={cls_mean_p:.3f}). Any small '
+            f'segmentation mask is treated as a probable false positive. Correlate '
+            f'with clinical history.'
+        )
+    elif cls_verdict == 'tumor' and area_px == 0:
+        recommendation = (
+            'Classifier-segmenter disagreement: classifiers report tumor but no mask '
+            'was generated. Radiologist review required before any clinical decision.'
+        )
+    else:
+        recommendation = overall.get('action_recommendation', '')
+
+    # When verdict is no_tumor, override the rule-based differential bullets
+    # entirely - the rule base infers from geometry only and would produce
+    # "infiltrative mass" bullets for a false-positive segmentation. The LLM
+    # passes downstream are also short-circuited (see explain()).
+    if cls_verdict == 'no_tumor' and cls_band in ('high', 'moderate'):
+        diff = [{
+            'statement': (
+                f'No tumor. Classifier consensus is negative '
+                f'(mean p={cls_mean_p:.3f}, {cls_band} confidence). '
+                f'No differential diagnosis applies; do not interpret the segmentation '
+                f'mask as a lesion.'
+            ),
+            'supported_by': ['model_behavior.per_model_probabilities'],
+            'confidence': cls_band,
+        }]
+
     out = {
         'summary': impression,
         'impression': impression,
@@ -1405,7 +1542,12 @@ def _local_narrative(features: dict, classifier_results: Optional[dict],
         'grade_evidence_narrative': grade_narr,
         'model_agreement_analysis': model_agree,
         'confidence_assessment': confidence,
-        'recommendation': overall.get('action_recommendation', ''),
+        'recommendation': recommendation,
+        'classifier_consensus': {
+            'verdict': cls_verdict,
+            'mean_probability': cls_mean_p,
+            'confidence_band': cls_band,
+        },
         'quality_warnings': qual.get('quality_warnings', []),
         'disclaimer': _DEFAULT_DISCLAIMER,
     }

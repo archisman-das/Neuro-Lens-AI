@@ -158,12 +158,16 @@ def _load_segmentation_model(modality: str | None = None):
     return SEG_CACHE[cache_key]
 
 
-# Cascade threshold: if v3 finds fewer than this many tumor pixels on a 256x256
-# slice (~0.04% of image area), treat v3 as having "found nothing" and retry
-# with the T1c specialist. Empirically v3's true positives are >>500 px; sub-25
-# masks are almost always background noise. Tweak in one place if you move
-# image_size off 256.
+# Cascade thresholds. Two reasons to retry with the T1c specialist:
+#   AREA: v3 found <25 px of tumor (essentially nothing). True positives are
+#         routinely >500 px so <25 is just background noise.
+#   PROB: v3 returned an area but mean probability inside the mask is below
+#         this threshold, meaning v3 is "kind of" picking up something but
+#         not committing - common on Kaggle T1-contrast single-modality
+#         input where v3 (trained mostly on multi-modal stacks) gives soft
+#         predictions. T1c specialist often nails these.
 CASCADE_MIN_AREA_PX = 25
+CASCADE_MIN_MEAN_PROB = 0.65
 
 
 def _get_onnx_session(onnx_path):
@@ -369,36 +373,55 @@ def segment_image(image_bytes, threshold=0.5, modality: str | None = None):
         return primary
 
     primary_area = int(primary.get('tumor_area_px', 0))
+    primary_mean_prob = float(primary.get('mean_prob_in_mask') or 0.0)
     specialist_ckpt = MODALITY_DIRS.get('t1c', None)
     specialist_available = (specialist_ckpt is not None and (
         (specialist_ckpt / 'best_model.pt').exists()
         or (specialist_ckpt / 'best_model.onnx').exists()
     ))
 
-    # v3 found enough tumor: no cascade needed.
-    if primary_area >= CASCADE_MIN_AREA_PX or not specialist_available:
+    # v3 found a confident chunk of tumor: no cascade needed.
+    primary_confident = (primary_area >= CASCADE_MIN_AREA_PX
+                          and primary_mean_prob >= CASCADE_MIN_MEAN_PROB)
+    if primary_confident or not specialist_available:
+        if primary_confident:
+            reason = 'v3_sufficient'
+        elif not specialist_available:
+            reason = 'specialist_unavailable'
+        else:
+            reason = 'v3_only'
         primary['cascade'] = {
             'used': primary.get('source_dir'),
             'tried': [primary.get('source_dir')],
             'primary_area_px': primary_area,
+            'primary_mean_prob': primary_mean_prob,
             'specialist_area_px': None,
-            'reason': ('v3_sufficient' if primary_area >= CASCADE_MIN_AREA_PX
-                       else 'specialist_unavailable'),
+            'reason': reason,
         }
         return primary
 
-    # v3 came up empty - try the T1c specialist.
+    # v3 was empty or uncertain - try the T1c specialist.
     specialist = _segment_one(image_bytes, threshold, modality='t1c')
     specialist_area = int(specialist.get('tumor_area_px', 0)) if specialist.get('success') else 0
+    specialist_mean_prob = float(specialist.get('mean_prob_in_mask') or 0.0)
 
-    if specialist_area >= CASCADE_MIN_AREA_PX:
-        # Specialist rescued us - return it.
+    # Pick whichever (specialist vs primary) has the highest mean_prob_in_mask
+    # AND meets the area floor. If specialist gives a better-confidence mask we
+    # take it; otherwise we keep v3 and tag the cascade reason for transparency.
+    specialist_useful = (specialist_area >= CASCADE_MIN_AREA_PX
+                         and specialist_mean_prob >= primary_mean_prob)
+    if specialist_useful:
         specialist['cascade'] = {
             'used': specialist.get('source_dir'),
             'tried': [primary.get('source_dir'), specialist.get('source_dir')],
             'primary_area_px': primary_area,
+            'primary_mean_prob': primary_mean_prob,
             'specialist_area_px': specialist_area,
-            'reason': f'v3_empty_specialist_recovered ({primary_area}px -> {specialist_area}px)',
+            'specialist_mean_prob': specialist_mean_prob,
+            'reason': (f'specialist_higher_confidence '
+                        f'({primary_mean_prob:.2f} -> {specialist_mean_prob:.2f})'
+                        if primary_area > 0
+                        else f'v3_empty_specialist_recovered ({primary_area}px -> {specialist_area}px)'),
         }
         return specialist
 
@@ -488,6 +511,32 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
                                                            interpolation=_cv2.INTER_LINEAR)
     except Exception as exc:
         classifier_results['_error'] = f'classifier batch failed: {exc}'
+
+    # --- 2b) Classifier verdict gating ------------------------------------
+    # Mark segmentation as a probable false positive when ALL classifiers
+    # disagree with the mask. The U-Net was trained on patches that always
+    # contained tumor, so it has a positive bias - on no-tumor inputs it
+    # still picks up some intensity edges and emits a small mask. Carrying
+    # this flag through the response lets the UI hide the false-positive
+    # green overlay and lets the LLM-explanation pipeline frame the report
+    # as no-tumor instead of inventing a "lesion".
+    try:
+        from src.llm_explain import _classifier_consensus
+        verdict, mean_p, band = _classifier_consensus(classifier_results)
+    except Exception:
+        verdict, mean_p, band = None, None, None
+    seg.setdefault('classifier_consensus', {
+        'verdict': verdict,
+        'mean_probability': mean_p,
+        'confidence_band': band,
+    })
+    if verdict == 'no_tumor' and band in ('high', 'moderate'):
+        seg['mask_suppressed'] = True
+        seg['mask_suppressed_reason'] = (
+            f'classifier_consensus_no_tumor (mean p={mean_p:.3f}, {band} confidence)'
+        )
+    else:
+        seg['mask_suppressed'] = False
 
     # --- 3) Deterministic feature extraction --------------------------------
     try:
@@ -820,12 +869,24 @@ def predict_image(model_name, image_bytes):
     except Exception:
         result['image'] = None
 
-    # Grad-CAM. For the PyTorch hybrid ViT we point at the last ResNet50
-    # conv block (still a Conv2d), so the same path works for all three.
+    # Saliency / Grad-CAM. Three branches:
+    #   1. PyTorch loaded -> true Grad-CAM via autograd (best quality).
+    #   2. ONNX-only (Spaces) -> occlusion sensitivity. We slide a small grey
+    #      patch over the image, run ONNX inference at each position, and
+    #      record the prediction drop. This is a forward-only saliency
+    #      method that gives a Grad-CAM-like map without needing autograd.
+    #   3. Legacy TF .h5 -> traditional Grad-CAM via tf.expand_dims path.
     result['gradcam'] = None
+    result['gradcam_method'] = None
     try:
         if backend == 'torch' and model_name in ('cnn', 'transfer', 'vit'):
             result['gradcam'] = _torch_gradcam_data_url(model, model_name, image_array, normalize_imagenet, device)
+            result['gradcam_method'] = 'grad-cam'
+        elif runtime == 'onnx' and onnx_path is not None:
+            result['gradcam'] = _onnx_occlusion_saliency_data_url(
+                sess, image_array, normalize_imagenet,
+            )
+            result['gradcam_method'] = 'occlusion-sensitivity'
         elif backend == 'tf' and model_name in ('cnn', 'transfer'):
             import tensorflow as tf  # lazy: only needed for legacy .h5 path
             from src.utils import make_gradcam_heatmap, overlay_heatmap
@@ -835,11 +896,73 @@ def predict_image(model_name, image_bytes):
             buf = io.BytesIO()
             Image.fromarray(overlay).save(buf, format='PNG')
             result['gradcam'] = 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
+            result['gradcam_method'] = 'grad-cam-tf'
     except Exception as exc:
-        print(f'[dashboard] grad-cam failed for {model_name}: {exc}', flush=True)
+        logger.warning('saliency_failed model=%s err=%s', model_name, exc)
         result['gradcam'] = None
+        result['gradcam_method'] = None
 
     return result
+
+
+def _onnx_occlusion_saliency_data_url(sess, image_array_0_255: np.ndarray,
+                                        normalize_imagenet: bool,
+                                        patch_size: int = 32,
+                                        stride: int = 16) -> str:
+    """Occlusion-sensitivity saliency for an ONNX classifier.
+
+    Slide a `patch_size x patch_size` grey patch over the image at `stride`
+    pixels. For each position, run forward inference and measure the drop in
+    the tumor logit vs. baseline. The accumulated drop-per-pixel becomes a
+    saliency heatmap (high values = "important to keep" = tumor location).
+
+    Trade-off: 169 forwards on 224x224 at stride=16 patch=32 = ~150 ms on
+    CUDA / ~6 s on CPU. For Spaces this is acceptable on a per-request basis;
+    callers wanting faster preview can bump stride to 32 (49 forwards).
+    """
+    import matplotlib.cm as cm
+    import cv2 as _cv2
+    h = w = 224  # all current classifier ONNXes were exported at 224
+    arr = image_array_0_255.astype(np.float32) / 255.0
+    if normalize_imagenet:
+        norm = (arr - np.array([0.485, 0.456, 0.406], dtype=np.float32)) / \
+                np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    else:
+        norm = arr.copy()
+    baseline = norm.transpose(2, 0, 1)[None].astype(np.float32)
+    baseline_logit = float(np.asarray(sess.run(None, {'input': baseline})[0]).reshape(-1)[0])
+
+    grey_pixel = norm.mean(axis=(0, 1))  # in normalized space
+    sal = np.zeros((h, w), dtype=np.float32)
+    counts = np.zeros((h, w), dtype=np.float32)
+    for y in range(0, h - patch_size + 1, stride):
+        for x in range(0, w - patch_size + 1, stride):
+            occluded = norm.copy()
+            occluded[y:y + patch_size, x:x + patch_size] = grey_pixel
+            occ_input = occluded.transpose(2, 0, 1)[None].astype(np.float32)
+            occ_logit = float(np.asarray(sess.run(None, {'input': occ_input})[0]).reshape(-1)[0])
+            drop = baseline_logit - occ_logit
+            sal[y:y + patch_size, x:x + patch_size] += drop
+            counts[y:y + patch_size, x:x + patch_size] += 1
+
+    sal /= np.maximum(counts, 1)
+    sal = sal - sal.min()
+    if sal.max() > 0:
+        sal = sal / sal.max()
+    # Smooth a bit so the patchy grid is less obvious.
+    sal = _cv2.GaussianBlur(sal, (0, 0), sigmaX=8)
+    sal = sal - sal.min()
+    if sal.max() > 0:
+        sal = sal / sal.max()
+
+    sal_resized = _cv2.resize(sal, (224, 224), interpolation=_cv2.INTER_LINEAR)
+    heat = (sal_resized * 255).astype(np.uint8)
+    colored = (cm.get_cmap('viridis')(heat / 255.0)[..., :3] * 255).astype(np.uint8)
+    overlay = (0.5 * image_array_0_255.astype(np.float32) + 0.5 * colored.astype(np.float32))
+    overlay = np.clip(overlay, 0, 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(overlay).save(buf, format='PNG')
+    return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
 
 
 def _torch_gradcam_data_url(model, model_name: str, image_array_0_255: np.ndarray,

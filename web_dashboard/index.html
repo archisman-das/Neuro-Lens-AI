@@ -363,35 +363,37 @@
                             </div>
                         </div>
                         <div class="panel-content">
+                            <div id="maskSuppressBanner" class="mask-suppress-banner" style="display:none;"></div>
                             <div class="viz-container" id="vizContainer">
                                 <img id="vizImage" src="" alt="Visualization">
                                 <img id="heatmapImage" src="" alt="Heatmap" style="display: none;">
                                 <img id="overlayImage" src="" alt="Overlay" style="display: none;">
                                 <img id="maskImage" src="" alt="U-Net Mask" style="display: none; background: black;">
                                 <img id="segoverlayImage" src="" alt="U-Net Overlay" style="display: none;">
+                                <div id="vizPlaceholder" class="viz-placeholder" style="display:none;"></div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Additional Analysis -->
+                <!-- Reliability metrics derived from the 3-classifier ensemble -->
                 <div class="additional-analysis">
                     <div class="analysis-card">
                         <h4>Uncertainty Analysis</h4>
                         <div class="uncertainty-stats">
                             <div class="uncertainty-item">
-                                <span class="uncertainty-label">Epistemic</span>
+                                <span class="uncertainty-label" title="Inter-model disagreement: std of probabilities across CNN / Transfer / ViT.">Epistemic</span>
                                 <span class="uncertainty-value" id="epistemicValue">--</span>
                             </div>
                             <div class="uncertainty-item">
-                                <span class="uncertainty-label">Aleatoric</span>
+                                <span class="uncertainty-label" title="Binary entropy of the mean prediction: high when the mean is near 0.5, low when near 0 or 1.">Aleatoric</span>
                                 <span class="uncertainty-value" id="aleatoricValue">--</span>
                             </div>
                         </div>
                         <div class="uncertainty-bar">
                             <div class="uncertainty-fill" id="uncertaintyFill"></div>
                         </div>
-                        <span class="uncertainty-note" id="uncertaintyNote">Low uncertainty - High reliability</span>
+                        <span class="uncertainty-note" id="uncertaintyNote">Total uncertainty (epistemic + aleatoric, normalized)</span>
                     </div>
 
                     <div class="analysis-card">
@@ -401,7 +403,28 @@
                                 <span class="gauge-value" id="robustnessValue">--</span>
                             </div>
                         </div>
-                        <span class="robustness-note" id="robustnessNote">Model confidence under perturbation</span>
+                        <span class="robustness-note" id="robustnessNote">Distance from the decision boundary, scaled to 100%</span>
+                    </div>
+                </div>
+
+                <!-- Inference telemetry + cascade decision (backend facts) -->
+                <div class="additional-analysis">
+                    <div class="analysis-card">
+                        <h4>Inference Telemetry</h4>
+                        <dl class="telemetry-dl">
+                            <dt>Runtime</dt><dd id="telemRuntime">--</dd>
+                            <dt>Total elapsed</dt><dd id="telemTotal">--</dd>
+                        </dl>
+                    </div>
+
+                    <div class="analysis-card">
+                        <h4>Cascade Decision</h4>
+                        <dl class="telemetry-dl">
+                            <dt>Model used</dt><dd id="telemSegModel">--</dd>
+                            <dt>Reason</dt><dd id="telemSegReason">--</dd>
+                            <dt>Tumor area</dt><dd id="telemSegArea">--</dd>
+                            <dt>Mean prob in mask</dt><dd id="telemSegMeanProb">--</dd>
+                        </dl>
                     </div>
                 </div>
 

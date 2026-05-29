@@ -323,6 +323,47 @@ class NeuroLensApp {
         const isPositive = positiveVotes >= Math.ceil(realResults.length / 2);
         const processingTime = ((Date.now() - this.startTime) / 1000).toFixed(1);
 
+        // ---- Classifier-ensemble reliability metrics ---------------------
+        // Computed from the 3 per-model tumor probabilities:
+        //   epistemic  = std of the 3 probabilities (inter-model disagreement)
+        //   aleatoric  = binary entropy of the mean (data uncertainty near boundary)
+        //   robustness = (max(mean, 1-mean) - 0.5) * 2 -> distance from boundary in [0,1]
+        const probs = realResults
+            .map(r => (typeof r.probability === 'number' ? r.probability : null))
+            .filter(p => p != null);
+        let epistemic = null, aleatoric = null, robustness = null, meanProb = null;
+        if (probs.length >= 2) {
+            const m = probs.reduce((a, b) => a + b, 0) / probs.length;
+            const v = probs.reduce((a, b) => a + (b - m) * (b - m), 0) / probs.length;
+            epistemic = Math.sqrt(v);
+            // Binary entropy with safe log
+            const eps = 1e-9;
+            const safeM = Math.min(Math.max(m, eps), 1 - eps);
+            aleatoric = -safeM * Math.log2(safeM) - (1 - safeM) * Math.log2(1 - safeM);
+            // Distance from 0.5, scaled to [0,1]
+            robustness = (Math.max(m, 1 - m) - 0.5) * 2;
+            meanProb = m;
+        }
+
+        // ---- Classifier consensus verdict (matches the server-side rule) -
+        // 'tumor' / 'no_tumor' / 'mixed' / null. Used to suppress the U-Net
+        // false-positive mask when classifiers all agree it is not a tumor.
+        let consensus = { verdict: null, mean: meanProb, band: null };
+        if (probs.length >= 3 && meanProb != null) {
+            const allAbove = probs.every(p => p >= 0.5);
+            const allBelow = probs.every(p => p <= 0.5);
+            if (meanProb >= 0.7 && allAbove) {
+                consensus.verdict = 'tumor';
+                consensus.band = meanProb >= 0.9 ? 'high' : 'moderate';
+            } else if (meanProb <= 0.3 && allBelow) {
+                consensus.verdict = 'no_tumor';
+                consensus.band = meanProb <= 0.1 ? 'high' : 'moderate';
+            } else {
+                consensus.verdict = 'mixed';
+                consensus.band = 'low';
+            }
+        }
+
         return {
             patientId,
             timestamp: new Date().toLocaleString(),
@@ -332,11 +373,9 @@ class NeuroLensApp {
             isPositive,
             confidence: bestModel ? bestModel.confidence : 0,
             processingTime,
-            // Real uncertainty/robustness numbers are not computed by the
-            // backend yet — the previous values were random JS placeholders.
-            // We surface "N/A" rather than fabricate numbers.
-            uncertainty: { epistemic: null, aleatoric: null },
-            robustness: null,
+            consensus,
+            uncertainty: { epistemic, aleatoric },
+            robustness,
         };
     }
     
@@ -381,50 +420,98 @@ class NeuroLensApp {
             </tr>
         `).join('');
         
-        // Uncertainty / robustness numbers used to be JS placeholders. Until
-        // a real estimator is wired up server-side we render N/A so the UI
-        // does not lie about reliability.
+        // --- Uncertainty + Robustness (computed from the 3-classifier vote) ---
+        const setT = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+        const fmt3 = (v) => (v == null || Number.isNaN(v)) ? 'N/A' : v.toFixed(3);
         const epEl = document.getElementById('epistemicValue');
         const alEl = document.getElementById('aleatoricValue');
-        epEl.textContent = results.uncertainty.epistemic == null ? 'N/A' : results.uncertainty.epistemic.toFixed(3);
-        alEl.textContent = results.uncertainty.aleatoric == null ? 'N/A' : results.uncertainty.aleatoric.toFixed(3);
-        const uncertaintyAvailable = results.uncertainty.epistemic != null && results.uncertainty.aleatoric != null;
-        const totalUncertainty = uncertaintyAvailable
-            ? (results.uncertainty.epistemic + results.uncertainty.aleatoric) / 2
-            : 0;
-        document.getElementById('uncertaintyFill').style.width = `${(uncertaintyAvailable ? totalUncertainty : 0) * 100}%`;
-        document.getElementById('uncertaintyNote').textContent = uncertaintyAvailable
-            ? (totalUncertainty < 0.1 ? 'Low uncertainty - High reliability'
-                : totalUncertainty < 0.2 ? 'Moderate uncertainty - Review recommended'
-                : 'High uncertainty - Clinical review required')
-            : 'Uncertainty estimator not yet wired into the backend.';
-
-        const robustnessPercent = results.robustness == null ? null : results.robustness * 100;
-        document.getElementById('robustnessValue').textContent = robustnessPercent == null
-            ? 'N/A'
-            : `${robustnessPercent.toFixed(0)}%`;
-        document.getElementById('robustnessGauge').style.background = robustnessPercent == null
-            ? 'conic-gradient(var(--gray-200) 0deg, var(--gray-200) 360deg)'
-            : `conic-gradient(var(--success) 0deg, var(--success) ${robustnessPercent * 3.6}deg, var(--gray-200) ${robustnessPercent * 3.6}deg)`;
-        document.getElementById('robustnessNote').textContent = robustnessPercent == null
-            ? 'Robustness analysis not yet wired into the backend.'
-            : (robustnessPercent > 80 ? 'Excellent robustness'
-                : robustnessPercent > 60 ? 'Good robustness'
-                : 'Moderate robustness - Consider retraining');
-
-        // Visualizations: the "Original" tab shows the uploaded image, the
-        // Grad-CAM tabs show whatever the backend returned for the best model,
-        // and the U-Net Mask / Overlay tabs show the segmentation result.
-        if (this.imageDataUrl) {
-            document.getElementById('vizImage').src = this.imageDataUrl;
+        if (epEl) epEl.textContent = fmt3(results.uncertainty.epistemic);
+        if (alEl) alEl.textContent = fmt3(results.uncertainty.aleatoric);
+        const totalUnc = (results.uncertainty.epistemic == null || results.uncertainty.aleatoric == null)
+            ? 0
+            : Math.min(1, (results.uncertainty.epistemic + results.uncertainty.aleatoric) / 2);
+        const uFill = document.getElementById('uncertaintyFill');
+        if (uFill) uFill.style.width = `${totalUnc * 100}%`;
+        const uNote = document.getElementById('uncertaintyNote');
+        if (uNote) {
+            if (results.uncertainty.epistemic == null) {
+                uNote.textContent = 'Need >=2 classifier outputs to compute uncertainty.';
+            } else if (totalUnc < 0.10) {
+                uNote.textContent = 'Low total uncertainty - models confident, prediction near decision-boundary extreme.';
+            } else if (totalUnc < 0.30) {
+                uNote.textContent = 'Moderate uncertainty - clinical review recommended.';
+            } else {
+                uNote.textContent = 'High uncertainty - radiologist correlation required.';
+            }
         }
+        // Robustness (boundary distance) in [0,1] -> percent
+        const robPct = results.robustness == null ? null : results.robustness * 100;
+        const rValEl = document.getElementById('robustnessValue');
+        if (rValEl) rValEl.textContent = robPct == null ? 'N/A' : `${robPct.toFixed(0)}%`;
+        const rGauge = document.getElementById('robustnessGauge');
+        if (rGauge) {
+            rGauge.style.background = robPct == null
+                ? 'conic-gradient(var(--gray-200) 0deg, var(--gray-200) 360deg)'
+                : `conic-gradient(var(--success) 0deg, var(--success) ${robPct * 3.6}deg, var(--gray-200) ${robPct * 3.6}deg)`;
+        }
+        const rNote = document.getElementById('robustnessNote');
+        if (rNote) {
+            if (robPct == null) {
+                rNote.textContent = 'Need >=2 classifier outputs to compute robustness.';
+            } else if (robPct >= 90) {
+                rNote.textContent = 'Excellent robustness - prediction far from decision boundary.';
+            } else if (robPct >= 60) {
+                rNote.textContent = 'Good robustness.';
+            } else {
+                rNote.textContent = 'Moderate robustness - prediction is close to the decision boundary.';
+            }
+        }
+
+        // --- Inference telemetry + cascade decision ----------------------
+        const segResult = this.currentSegmentation && this.currentSegmentation.result;
+        const anyRuntime = (results.models.find(m => m.runtime) || {}).runtime
+            || (segResult && segResult.runtime) || '--';
+        setT('telemRuntime', anyRuntime);
+        setT('telemTotal', `${results.processingTime}s`);
+        if (segResult) {
+            const cascade = segResult.cascade || {};
+            setT('telemSegModel', cascade.used || segResult.source_dir || '--');
+            setT('telemSegReason', cascade.reason || 'n/a');
+            setT('telemSegArea', (segResult.tumor_area_px != null) ? `${segResult.tumor_area_px} px` : '--');
+            setT('telemSegMeanProb', (segResult.mean_prob_in_mask != null) ? segResult.mean_prob_in_mask.toFixed(3) : '--');
+        } else {
+            ['telemSegModel', 'telemSegReason', 'telemSegArea', 'telemSegMeanProb']
+                .forEach(id => setT(id, '--'));
+        }
+
+        // --- Visualizations ----------------------------------------------
+        if (this.imageDataUrl) document.getElementById('vizImage').src = this.imageDataUrl;
         this.setHeatmapFromBackend(results.bestModel);
-        const seg = this.currentSegmentation;
+
+        // Apply the classifier-verdict gate. When all 3 classifiers agree NO
+        // tumor with at least 'moderate' confidence, the U-Net mask is
+        // treated as a probable false positive: the overlay tab shows the
+        // ORIGINAL image with a warning badge, instead of the green-stained
+        // overlay. The raw mask tab still shows the model's output for
+        // transparency.
         const maskImg = document.getElementById('maskImage');
         const segoverlayImg = document.getElementById('segoverlayImage');
-        if (seg && seg.result && maskImg && segoverlayImg) {
-            if (seg.result.mask) maskImg.src = seg.result.mask;
-            if (seg.result.overlay) segoverlayImg.src = seg.result.overlay;
+        const verdict = results.consensus && results.consensus.verdict;
+        const verdictBand = results.consensus && results.consensus.band;
+        const suppress = (verdict === 'no_tumor' && (verdictBand === 'high' || verdictBand === 'moderate'));
+        this._maskSuppressed = suppress;
+        this._maskSuppressedReason = suppress
+            ? `Suppressed: classifier consensus is no-tumor (mean p=${results.consensus.mean.toFixed(3)}, ${verdictBand} confidence). U-Net masks on no-tumor scans are probable false positives - the U-Net was not trained on healthy brains.`
+            : null;
+        if (segResult && maskImg && segoverlayImg) {
+            if (segResult.mask) maskImg.src = segResult.mask;
+            // When suppressed: paint the original image instead of the green
+            // overlay so the user does not get a false-positive visual signal.
+            if (suppress && this.imageDataUrl) {
+                segoverlayImg.src = this.imageDataUrl;
+            } else if (segResult.overlay) {
+                segoverlayImg.src = segResult.overlay;
+            }
         } else if (maskImg && segoverlayImg) {
             maskImg.src = '';
             segoverlayImg.src = '';
@@ -435,20 +522,31 @@ class NeuroLensApp {
     }
     
     setHeatmapFromBackend(bestModel) {
-        // Real Grad-CAM data:url returned by /predict for cnn/transfer. For
-        // ViT the backend returns null because the hybrid model has no single
-        // canonical 'final conv' layer suitable for Grad-CAM. In that case we
-        // fall back to displaying the input image with a small note.
+        // Real Grad-CAM data URL returned by /predict for cnn/transfer. The
+        // hybrid ViT and the Spaces ONNX deploy both return null (no autograd
+        // graph available). When null we show a true "unavailable" placeholder
+        // instead of repeating the raw MRI, which previously was confusing.
         const heatmapImg = document.getElementById('heatmapImage');
         const overlayImg = document.getElementById('overlayImage');
+        const placeholder = document.getElementById('vizPlaceholder');
         if (bestModel && bestModel.gradcam) {
             heatmapImg.src = bestModel.gradcam;
             overlayImg.src = bestModel.gradcam;
-            return;
-        }
-        if (this.imageDataUrl) {
-            heatmapImg.src = this.imageDataUrl;
-            overlayImg.src = this.imageDataUrl;
+            heatmapImg.dataset.available = 'true';
+            overlayImg.dataset.available = 'true';
+        } else {
+            // Clear the src and store an availability flag the tab-click
+            // handler reads to swap in the placeholder.
+            heatmapImg.src = '';
+            overlayImg.src = '';
+            heatmapImg.dataset.available = 'false';
+            overlayImg.dataset.available = 'false';
+            this._gradcamUnavailableReason = (bestModel && bestModel.runtime === 'onnx')
+                ? 'Grad-CAM requires the PyTorch autograd graph and is not available in the ONNX-only deploy (this Space). Run the local dashboard with .pt weights to view Grad-CAM overlays.'
+                : 'Grad-CAM unavailable for this model.';
+            if (placeholder) {
+                placeholder.textContent = this._gradcamUnavailableReason;
+            }
         }
     }
 
@@ -973,11 +1071,22 @@ class NeuroLensApp {
         
         // Handle view switching
         if (btn.dataset.view) {
-            ['vizImage', 'heatmapImage', 'overlayImage', 'maskImage', 'segoverlayImage'].forEach(id => {
+            ['vizImage', 'heatmapImage', 'overlayImage', 'maskImage', 'segoverlayImage', 'vizPlaceholder'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.style.display = 'none';
             });
-            // Map data-view names to img element ids.
+            // Suppression banner is shown only on the U-Net Mask / U-Net
+            // Overlay tabs when the classifier consensus is no-tumor.
+            const banner = document.getElementById('maskSuppressBanner');
+            if (banner) {
+                const isSegTab = (tabType === 'mask' || tabType === 'segoverlay');
+                if (this._maskSuppressed && isSegTab) {
+                    banner.style.display = 'block';
+                    banner.textContent = this._maskSuppressedReason || '';
+                } else {
+                    banner.style.display = 'none';
+                }
+            }
             const idMap = {
                 original: 'vizImage',
                 heatmap: 'heatmapImage',
@@ -987,6 +1096,19 @@ class NeuroLensApp {
             };
             const targetId = idMap[tabType] || `${tabType}Image`;
             const target = document.getElementById(targetId);
+            // If the user picked a Grad-CAM tab and we have no real heatmap
+            // (ONNX-only deploy, ViT hybrid, etc.), show the unavailable
+            // placeholder instead of an empty image element.
+            const needsAvailability = (tabType === 'heatmap' || tabType === 'overlay');
+            if (needsAvailability && target && target.dataset.available === 'false') {
+                const placeholder = document.getElementById('vizPlaceholder');
+                if (placeholder) {
+                    placeholder.style.display = 'flex';
+                    placeholder.textContent = this._gradcamUnavailableReason
+                        || 'Grad-CAM unavailable for the selected model.';
+                }
+                return;
+            }
             if (target) target.style.display = 'block';
         }
         

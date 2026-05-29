@@ -5,7 +5,7 @@ colorTo: purple
 sdk: docker
 app_port: 7860
 pinned: false
-short_description: Brain MRI tumor segmentation, classification, and open-source LLM radiology report.
+short_description: Brain MRI tumor detection + open-source LLM report
 tags:
   - medical-imaging
   - brain-tumor

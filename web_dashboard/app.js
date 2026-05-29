@@ -87,10 +87,18 @@ class NeuroLensApp {
             this.runSegmentation();
         });
 
-        // AI Explanation button
+        // AI Explanation button on the Segmentation page.
         const explainBtn = document.getElementById('runExplainBtn');
         if (explainBtn) {
             explainBtn.addEventListener('click', () => this.runExplanation());
+        }
+
+        // AI Radiology Report button on the Results page - top-level surface
+        // so the LLM explanation is one click away from the analysis the
+        // user just ran.
+        const generateBtn = document.getElementById('generateReportBtn');
+        if (generateBtn) {
+            generateBtn.addEventListener('click', () => this.generateReport());
         }
         
         // Tab switching
@@ -565,6 +573,133 @@ class NeuroLensApp {
             throw new Error((payload && payload.error) || '/explain failed');
         }
         return payload;
+    }
+
+    /**
+     * Generate Report flow on the Results page. Calls /explain (which runs
+     * the cascade segmentation + 3 classifiers + feature extraction + the
+     * 3-pattern LLM pipeline), then renders the full explanation panel
+     * inline inside #reportContent.
+     */
+    async generateReport() {
+        if (!this.currentFile) {
+            this.showToast('Upload an image first', 'Run Analysis on an MRI before requesting the report.', 'error');
+            return;
+        }
+        const placeholder = document.getElementById('reportPlaceholder');
+        const content = document.getElementById('reportContent');
+        const btn = document.getElementById('generateReportBtn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Running...'; }
+
+        // Build the rich panel skeleton inside reportContent. We literally
+        // duplicate the explain panel markup so renderExplanation can target
+        // the same element IDs as on the Segmentation tab.
+        if (content) {
+            content.style.display = 'block';
+            content.innerHTML = this._explainPanelMarkup();
+        }
+        if (placeholder) placeholder.style.display = 'none';
+
+        const thresholdInput = document.getElementById('thresholdSlider');
+        const threshold = thresholdInput ? (parseInt(thresholdInput.value, 10) / 100) : 0.5;
+        const backendSel = document.getElementById('reportBackendSelect');
+        const backend = backendSel ? backendSel.value : '';
+
+        try {
+            const payload = await this.callExplain(this.currentFile, threshold, '', backend);
+            if (payload.segmentation) {
+                this.currentSegmentation = { result: payload.segmentation, error: null };
+                this.renderSegmentationFromCache();
+            }
+            this.currentExplanation = payload.explanation || null;
+            this.renderExplanation(payload);
+            this.showToast('Report ready', `${(payload.explanation?.backend || 'deterministic')} backend completed.`, 'success');
+        } catch (err) {
+            console.error(err);
+            this.renderExplanationError(err.message || String(err));
+            this.showToast('Report failed', err.message || String(err), 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Generate Report'; }
+        }
+    }
+
+    /** Returns the same DOM IDs as #explainPanel so renderExplanation can target
+     * them inside the Results-page report block. */
+    _explainPanelMarkup() {
+        return `
+            <div class="explain-header">
+                <h3>Layered Pipeline Output</h3>
+                <div class="explain-header-meta">
+                    <span class="explain-backend" id="explainBackend">--</span>
+                    <span class="explain-safety-badge" id="explainSafetyBadge">--</span>
+                </div>
+            </div>
+            <div class="explain-body">
+                <div class="explain-section explain-impression">
+                    <h4>Impression</h4>
+                    <p id="explainImpression">--</p>
+                </div>
+                <div class="explain-section explain-confidence-card">
+                    <h4>Overall Confidence</h4>
+                    <div class="confidence-row">
+                        <div class="confidence-band" id="explainConfBand">--</div>
+                        <div class="confidence-score">
+                            <div class="confidence-score-value" id="explainConfScore">--</div>
+                            <div class="confidence-score-bar"><div class="confidence-score-fill" id="explainConfFill"></div></div>
+                        </div>
+                    </div>
+                    <p id="explainConfidence" class="explain-confidence-detail">--</p>
+                </div>
+                <div class="explain-section">
+                    <h4>Structured Findings</h4>
+                    <dl class="explain-findings" id="explainFindings"></dl>
+                </div>
+                <div class="explain-section">
+                    <h4>Grade-Evidence Score</h4>
+                    <pre id="explainGradeEvidence" class="explain-grade">--</pre>
+                </div>
+                <div class="explain-section">
+                    <h4>Differential Diagnosis (citation-checked)</h4>
+                    <div id="explainDifferentialList" class="differential-list"></div>
+                </div>
+                <div class="explain-section" id="explainVisualSection" style="display:none;">
+                    <h4>Visual Observations (LLM co-observer)</h4>
+                    <ul id="explainVisualObservations"></ul>
+                </div>
+                <div class="explain-section explain-disagreements" id="explainDisagreementsSection" style="display:none;">
+                    <h4>Model Disagreements (flagged conflicts)</h4>
+                    <ul id="explainVisualDisagreements"></ul>
+                </div>
+                <div class="explain-section explain-recommendation">
+                    <h4>Recommendation</h4>
+                    <p id="explainRecommendation">--</p>
+                </div>
+                <div class="explain-section">
+                    <h4>Classifier Agreement</h4>
+                    <p id="explainAgreement">--</p>
+                </div>
+                <div class="explain-section explain-llm-passes">
+                    <h4>LLM Pass Status</h4>
+                    <div id="explainLlmPasses" class="llm-passes-grid"></div>
+                </div>
+                <div class="explain-section explain-quality" id="explainQualitySection" style="display:none;">
+                    <h4>Quality Warnings</h4>
+                    <ul id="explainQualityWarnings"></ul>
+                </div>
+                <div class="explain-section explain-disclaimer">
+                    <h4>Disclaimer</h4>
+                    <p id="explainDisclaimer">Not a medical diagnosis. Research / educational only.</p>
+                </div>
+                <details class="explain-raw">
+                    <summary>Polished summary (verified prose, may equal Impression if LLM polish rejected)</summary>
+                    <p id="explainSummary"></p>
+                </details>
+                <details class="explain-raw">
+                    <summary>Raw deterministic features (JSON)</summary>
+                    <pre id="explainRaw"></pre>
+                </details>
+            </div>
+        `;
     }
 
     async runExplanation() {

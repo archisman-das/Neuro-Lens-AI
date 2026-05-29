@@ -83,17 +83,23 @@ sys.path.append(str(ROOT_DIR))
 def _resolve_segmentation_weights(modality: str | None = None):
     """Return (weights_path, dir_name) of the model to load.
 
-    If `modality` matches a key in MODALITY_DIRS and that specialist has a
-    best_model.pt, we use it. Otherwise fall back to the default search order
-    in SEGMENTATION_DIRS (latest -> oldest).
+    Tries .pt first (needed for PyTorch fallback paths), then .onnx (the
+    Spaces deploy state where only ONNX weights are on disk). Either is fine
+    for inference since segment_image's ONNX-preferred branch handles both.
     """
+    def _find_in(d):
+        for ext in ('.pt', '.onnx'):
+            p = d / f'best_model{ext}'
+            if p.exists():
+                return p
+        return None
     if modality and modality in MODALITY_DIRS:
-        p = MODALITY_DIRS[modality] / 'best_model.pt'
-        if p.exists():
+        p = _find_in(MODALITY_DIRS[modality])
+        if p is not None:
             return p, MODALITY_DIRS[modality].name
     for d in SEGMENTATION_DIRS:
-        p = d / 'best_model.pt'
-        if p.exists():
+        p = _find_in(d)
+        if p is not None:
             return p, d.name
     return None, None
 
@@ -364,8 +370,10 @@ def segment_image(image_bytes, threshold=0.5, modality: str | None = None):
 
     primary_area = int(primary.get('tumor_area_px', 0))
     specialist_ckpt = MODALITY_DIRS.get('t1c', None)
-    specialist_available = (specialist_ckpt is not None
-                            and (specialist_ckpt / 'best_model.pt').exists())
+    specialist_available = (specialist_ckpt is not None and (
+        (specialist_ckpt / 'best_model.pt').exists()
+        or (specialist_ckpt / 'best_model.onnx').exists()
+    ))
 
     # v3 found enough tumor: no cascade needed.
     if primary_area >= CASCADE_MIN_AREA_PX or not specialist_available:
@@ -1182,17 +1190,21 @@ def _get_status_snapshot() -> dict:
             }
         else:
             snap['classifiers'][m] = {'pt': None, 'preferred_runtime': None}
-    # Segmentation model directories (which exist and which have ONNX siblings).
+    # Segmentation model directories. A model counts as 'present' if EITHER
+    # the .pt or .onnx file exists - both are valid inference paths and the
+    # Spaces container only has .onnx (downloaded from HF Hub at boot).
     for d in SEGMENTATION_DIRS + list(MODALITY_DIRS.values()):
         pt = d / 'best_model.pt'
-        if pt.exists():
-            onnx = _segmentation_onnx_path(pt)
-            snap['segmentation_models'].append({
-                'dir': d.name,
-                'pt_size_mb': round(pt.stat().st_size / 1e6, 1),
-                'onnx': onnx.name if onnx else None,
-                'preferred_runtime': 'onnx' if (onnx and USE_ONNX) else 'pytorch',
-            })
+        onnx = d / 'best_model.onnx'
+        if not pt.exists() and not onnx.exists():
+            continue
+        snap['segmentation_models'].append({
+            'dir': d.name,
+            'pt_size_mb': round(pt.stat().st_size / 1e6, 1) if pt.exists() else None,
+            'onnx_size_mb': round(onnx.stat().st_size / 1e6, 1) if onnx.exists() else None,
+            'onnx': onnx.name if onnx.exists() else None,
+            'preferred_runtime': 'onnx' if (onnx.exists() and USE_ONNX) else 'pytorch',
+        })
     # ONNX runtime telemetry.
     try:
         import onnxruntime as ort
@@ -1294,17 +1306,22 @@ def _warm_models_async():
                 if onnx and USE_ONNX:
                     if _get_onnx_session(onnx) is not None:
                         warmed += 1
-        # Segmentation cascade pair
+        # Segmentation cascade pair. Accept either .pt (dev box) or .onnx
+        # alone (Spaces, where we only have .onnx after the HF Hub download).
         for d in [ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v3',
                    MODALITY_DIRS.get('t1c')]:
             if d is None:
                 continue
+            onnx = d / 'best_model.onnx'
             pt = d / 'best_model.pt'
-            if pt.exists():
-                onnx = _segmentation_onnx_path(pt)
-                if onnx and USE_ONNX:
-                    if _get_onnx_session(onnx) is not None:
-                        warmed += 1
+            if not onnx.exists() and not pt.exists():
+                continue
+            # Prefer .onnx if it exists; fall back to the sibling resolver
+            # on the .pt path otherwise.
+            target = onnx if onnx.exists() else _segmentation_onnx_path(pt)
+            if target and USE_ONNX:
+                if _get_onnx_session(target) is not None:
+                    warmed += 1
         elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.info('model_warmup_complete sessions=%d duration_ms=%.1f', warmed, elapsed_ms)
 

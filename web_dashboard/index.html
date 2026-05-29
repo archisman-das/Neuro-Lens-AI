@@ -404,6 +404,37 @@
                         <span class="robustness-note" id="robustnessNote">Model confidence under perturbation</span>
                     </div>
                 </div>
+
+                <!-- AI Radiology Report (LLM-generated, hallucination-checked) -->
+                <div class="report-section">
+                    <div class="report-header">
+                        <div>
+                            <h2>AI Radiology Report</h2>
+                            <p class="report-subtitle">Structured radiology-style report grounded in measured features, with a layered LLM enrichment pass (polish, differential expansion, visual co-observer). Every LLM claim is citation-checked or conflict-flagged against measurements.</p>
+                        </div>
+                        <div class="report-actions">
+                            <select id="reportBackendSelect" class="select-input compact">
+                                <option value="">Auto-select backend</option>
+                                <option value="hf_inference">HF Inference (Llama 3.3 70B + Gemma 3 27B)</option>
+                                <option value="ollama">Local Ollama</option>
+                                <option value="anthropic">Anthropic Claude</option>
+                                <option value="none">Deterministic only (zero hallucination)</option>
+                            </select>
+                            <button class="btn btn-primary" id="generateReportBtn">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                    <polyline points="14 2 14 8 20 8"/>
+                                </svg>
+                                Generate Report
+                            </button>
+                        </div>
+                    </div>
+                    <div id="reportPlaceholder" class="report-placeholder">
+                        Click "Generate Report" to run the layered LLM pipeline on this scan.
+                        The deterministic radiology report ships every time; the LLM pass adds polished prose, citation-checked differential diagnoses, and visual co-observations.
+                    </div>
+                    <div id="reportContent" class="report-content" style="display:none;"></div>
+                </div>
             </section>
 
             <!-- Segmentation Section -->

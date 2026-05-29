@@ -1,0 +1,78 @@
+[info] device=cuda amp=True (NVIDIA GeForce RTX 4060 Laptop GPU)
+[info] GPU telemetry logging to segmentation_artifacts\attention_unet_t1c\gpu_telemetry.csv every 30s
+[info] dataset_brats_t1c/train: 19631 samples
+[info] dataset_brats_t1c/val: 4113 samples
+[info] dataset_brats_t1c/test: 4151 samples
+[info] total train=19631 val=4113 test=4151
+[info] model: Unet + resnet34 (pretrained=imagenet) - 24,436,369 params
+E:\Neuro-Lens-AI-main\Neuro-Lens-AI-main\src\train_segmentation_v2.py:426: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\pytorch\torch\csrc\autograd\generated\python_variable_methods.cpp:837.)
+  running_loss += float(loss)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 01/25] train_loss=0.4176  val_dice=0.6094  val_iou=0.5188  val_bce=0.0447  lr=5.00e-05  (394.9s)
+        -> new best val_dice=0.6094; weights saved to segmentation_artifacts\attention_unet_t1c\best_model.pt
+[epoch 02/25] train_loss=0.2685  val_dice=0.6130  val_iou=0.5229  val_bce=0.0400  lr=1.00e-04  (261.1s)
+        -> new best val_dice=0.6130; weights saved to segmentation_artifacts\attention_unet_t1c\best_model.pt
+[epoch 03/25] train_loss=0.2507  val_dice=0.6213  val_iou=0.5349  val_bce=0.0412  lr=9.95e-05  (441.4s)
+        -> new best val_dice=0.6213; weights saved to segmentation_artifacts\attention_unet_t1c\best_model.pt
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 04/25] train_loss=0.2417  val_dice=0.6150  val_iou=0.5270  val_bce=0.0420  lr=9.82e-05  (429.0s)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 05/25] train_loss=0.2345  val_dice=0.6199  val_iou=0.5323  val_bce=0.0381  lr=9.59e-05  (187.6s)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 06/25] train_loss=0.2299  val_dice=0.6387  val_iou=0.5529  val_bce=0.0373  lr=9.28e-05  (178.3s)
+        -> new best val_dice=0.6387; weights saved to segmentation_artifacts\attention_unet_t1c\best_model.pt
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 07/25] train_loss=0.2255  val_dice=0.6166  val_iou=0.5293  val_bce=0.0411  lr=8.89e-05  (178.2s)
+[epoch 08/25] train_loss=0.2205  val_dice=0.6190  val_iou=0.5306  val_bce=0.0397  lr=8.43e-05  (188.3s)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 09/25] train_loss=0.2162  val_dice=0.6307  val_iou=0.5445  val_bce=0.0391  lr=7.90e-05  (192.8s)
+[nan_guard] step skipped (grad_norm not finite)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 10/25] train_loss=0.2121  val_dice=0.6241  val_iou=0.5362  val_bce=0.0422  lr=7.33e-05  (204.9s)
+[epoch 11/25] train_loss=0.2086  val_dice=0.6232  val_iou=0.5386  val_bce=0.0427  lr=6.71e-05  (336.9s)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 12/25] train_loss=0.2047  val_dice=0.6428  val_iou=0.5564  val_bce=0.0407  lr=6.06e-05  (225.7s)
+        -> new best val_dice=0.6428; weights saved to segmentation_artifacts\attention_unet_t1c\best_model.pt
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 13/25] train_loss=0.2015  val_dice=0.6331  val_iou=0.5479  val_bce=0.0418  lr=5.39e-05  (192.7s)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 14/25] train_loss=0.1975  val_dice=0.6336  val_iou=0.5498  val_bce=0.0408  lr=4.71e-05  (203.1s)
+[epoch 15/25] train_loss=0.1949  val_dice=0.6373  val_iou=0.5506  val_bce=0.0397  lr=4.04e-05  (201.8s)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 16/25] train_loss=0.1911  val_dice=0.6354  val_iou=0.5495  val_bce=0.0416  lr=3.39e-05  (196.6s)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 17/25] train_loss=0.1891  val_dice=0.6333  val_iou=0.5487  val_bce=0.0423  lr=2.77e-05  (203.2s)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 18/25] train_loss=0.1863  val_dice=0.6294  val_iou=0.5446  val_bce=0.0435  lr=2.20e-05  (204.1s)
+[epoch 19/25] train_loss=0.1831  val_dice=0.6281  val_iou=0.5420  val_bce=0.0446  lr=1.67e-05  (206.7s)
+[nan_guard] step skipped (grad_norm not finite)
+[nan_guard] step skipped (grad_norm not finite)
+[epoch 20/25] train_loss=0.1818  val_dice=0.6383  val_iou=0.5529  val_bce=0.0423  lr=1.21e-05  (209.6s)
+[info] Early stopping: no improvement in 8 epochs.
+[info] Final evaluation:
+{
+  "val": {
+    "split": "val",
+    "dice": 0.6427500948927851,
+    "iou": 0.5563855390073451,
+    "pixel_accuracy": 0.9904734913585256,
+    "bce_loss": 0.04066796167823924,
+    "positive_voxels_true": 3556645,
+    "positive_voxels_pred": 3434757,
+    "micro_dice": 0.7930480896392454,
+    "micro_iou": 0.6570668498318261
+  },
+  "test": {
+    "split": "test",
+    "dice": 0.6505545605324973,
+    "iou": 0.5674816422169051,
+    "pixel_accuracy": 0.9915141442607593,
+    "bce_loss": 0.036012192107535465,
+    "positive_voxels_true": 3417347,
+    "positive_voxels_pred": 3414448,
+    "micro_dice": 0.809886420772286,
+    "micro_iou": 0.6805118729069841
+  }
+}
+[done] Best val Dice = 0.6428

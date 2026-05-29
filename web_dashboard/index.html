@@ -164,8 +164,8 @@
                             </div>
                             <h3>Drop MRI Scan Here</h3>
                             <p>or click to browse files</p>
-                            <span class="file-types">Supports: DICOM, NIfTI, PNG, JPEG (Max 50MB)</span>
-                            <input type="file" id="fileInput" accept=".dcm,.nii,.png,.jpg,.jpeg" hidden>
+                            <span class="file-types">Supports: PNG, JPG, JPEG (Max 50MB)</span>
+                            <input type="file" id="fileInput" accept=".png,.jpg,.jpeg" hidden>
                         </div>
                         
                         <div class="upload-options">
@@ -176,7 +176,6 @@
                                     <option value="cnn">CNN (Fast)</option>
                                     <option value="transfer">Transfer Learning (Balanced)</option>
                                     <option value="vit">Vision Transformer (Accurate)</option>
-                                    <option value="attention_unet">Attention U-Net (Segmentation)</option>
                                 </select>
                             </div>
                             
@@ -382,8 +381,10 @@
                             <h3>Visualization</h3>
                             <div class="viz-tabs">
                                 <button class="tab-btn active" data-view="original">Original</button>
-                                <button class="tab-btn" data-view="heatmap">Heatmap</button>
-                                <button class="tab-btn" data-view="overlay">Overlay</button>
+                                <button class="tab-btn" data-view="heatmap">Grad-CAM</button>
+                                <button class="tab-btn" data-view="overlay">Grad-CAM Overlay</button>
+                                <button class="tab-btn" data-view="mask">U-Net Mask</button>
+                                <button class="tab-btn" data-view="segoverlay">U-Net Overlay</button>
                             </div>
                         </div>
                         <div class="panel-content">
@@ -391,6 +392,8 @@
                                 <img id="vizImage" src="" alt="Visualization">
                                 <img id="heatmapImage" src="" alt="Heatmap" style="display: none;">
                                 <img id="overlayImage" src="" alt="Overlay" style="display: none;">
+                                <img id="maskImage" src="" alt="U-Net Mask" style="display: none; background: black;">
+                                <img id="segoverlayImage" src="" alt="U-Net Overlay" style="display: none;">
                             </div>
                         </div>
                     </div>
@@ -442,9 +445,8 @@
                         <div class="control-group">
                             <label>Segmentation Model</label>
                             <select id="segModelSelect" class="select-input">
-                                <option value="attention_unet">Attention U-Net</option>
-                                <option value="unet">Standard U-Net</option>
-                                <option value="res_unet">Residual U-Net</option>
+                                <option value="">Attention U-Net (default: multi-modal v3)</option>
+                                <option value="t1c">Attention U-Net - T1c specialist</option>
                             </select>
                         </div>
                         <div class="control-group">
@@ -452,11 +454,27 @@
                             <input type="range" id="thresholdSlider" min="0" max="100" value="50">
                             <span id="thresholdValue">0.50</span>
                         </div>
+                        <div class="control-group">
+                            <label>LLM Backend</label>
+                            <select id="explainBackendSelect" class="select-input">
+                                <option value="">Auto (Ollama, then API fallback)</option>
+                                <option value="ollama">Ollama (local, Qwen2.5-VL)</option>
+                                <option value="anthropic">Anthropic Claude</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="none">Deterministic features only (no LLM)</option>
+                            </select>
+                        </div>
                         <button class="btn btn-primary" id="runSegmentationBtn">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polygon points="5 3 19 12 5 21 5 3"/>
                             </svg>
                             Run Segmentation
+                        </button>
+                        <button class="btn btn-outline" id="runExplainBtn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                            </svg>
+                            Generate AI Explanation
                         </button>
                     </div>
 
@@ -487,6 +505,114 @@
                         <div class="seg-metric">
                             <span class="metric-label">Tumor Area</span>
                             <span class="metric-value" id="tumorArea">--</span>
+                        </div>
+                        <div class="seg-metric">
+                            <span class="metric-label">Model Used</span>
+                            <span class="metric-value" id="segUsedModel" style="font-size:18px;">--</span>
+                            <span class="cascade-reason" id="segCascadeReason" style="font-size:11px;opacity:0.7;">--</span>
+                        </div>
+                    </div>
+
+                    <!-- AI Explanation Panel -->
+                    <div class="explain-panel" id="explainPanel" style="display: none;">
+                        <div class="explain-header">
+                            <h3>AI Explanation</h3>
+                            <div class="explain-header-meta">
+                                <span class="explain-backend" id="explainBackend">--</span>
+                                <span class="explain-safety-badge" id="explainSafetyBadge">--</span>
+                            </div>
+                        </div>
+                        <div class="explain-body">
+                            <!-- Impression -->
+                            <div class="explain-section explain-impression">
+                                <h4>Impression</h4>
+                                <p id="explainImpression">--</p>
+                            </div>
+
+                            <!-- Confidence band with score -->
+                            <div class="explain-section explain-confidence-card">
+                                <h4>Overall Confidence</h4>
+                                <div class="confidence-row">
+                                    <div class="confidence-band" id="explainConfBand">--</div>
+                                    <div class="confidence-score">
+                                        <div class="confidence-score-value" id="explainConfScore">--</div>
+                                        <div class="confidence-score-bar">
+                                            <div class="confidence-score-fill" id="explainConfFill"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <p id="explainConfidence" class="explain-confidence-detail">--</p>
+                            </div>
+
+                            <!-- Structured findings (radiology-style, 8 domains) -->
+                            <div class="explain-section">
+                                <h4>Structured Findings</h4>
+                                <dl class="explain-findings" id="explainFindings"></dl>
+                            </div>
+
+                            <!-- Grade evidence narrative -->
+                            <div class="explain-section">
+                                <h4>Grade-Evidence Score</h4>
+                                <pre id="explainGradeEvidence" class="explain-grade">--</pre>
+                            </div>
+
+                            <!-- Differential with citations -->
+                            <div class="explain-section">
+                                <h4>Differential Diagnosis (citation-checked)</h4>
+                                <div id="explainDifferentialList" class="differential-list"></div>
+                            </div>
+
+                            <!-- Visual observations (Pattern C) -->
+                            <div class="explain-section" id="explainVisualSection" style="display:none;">
+                                <h4>Visual Observations (LLM-co-observer)</h4>
+                                <ul id="explainVisualObservations"></ul>
+                            </div>
+
+                            <!-- Visual disagreements -->
+                            <div class="explain-section explain-disagreements" id="explainDisagreementsSection" style="display:none;">
+                                <h4>Model Disagreements (flagged conflicts)</h4>
+                                <ul id="explainVisualDisagreements"></ul>
+                            </div>
+
+                            <!-- Recommendation -->
+                            <div class="explain-section explain-recommendation">
+                                <h4>Recommendation</h4>
+                                <p id="explainRecommendation">--</p>
+                            </div>
+
+                            <!-- Model agreement -->
+                            <div class="explain-section">
+                                <h4>Classifier Agreement</h4>
+                                <p id="explainAgreement">--</p>
+                            </div>
+
+                            <!-- LLM passes status (transparency) -->
+                            <div class="explain-section explain-llm-passes">
+                                <h4>LLM Pass Status</h4>
+                                <div id="explainLlmPasses" class="llm-passes-grid"></div>
+                            </div>
+
+                            <!-- Quality warnings -->
+                            <div class="explain-section explain-quality" id="explainQualitySection" style="display:none;">
+                                <h4>Quality Warnings</h4>
+                                <ul id="explainQualityWarnings"></ul>
+                            </div>
+
+                            <!-- Disclaimer -->
+                            <div class="explain-section explain-disclaimer">
+                                <h4>Disclaimer</h4>
+                                <p id="explainDisclaimer">Not a medical diagnosis. Research / educational only.</p>
+                            </div>
+
+                            <!-- Collapsibles -->
+                            <details class="explain-raw">
+                                <summary>Polished summary (verified prose, may equal Impression if LLM polish rejected)</summary>
+                                <p id="explainSummary"></p>
+                            </details>
+                            <details class="explain-raw">
+                                <summary>Raw deterministic features (JSON)</summary>
+                                <pre id="explainRaw"></pre>
+                            </details>
                         </div>
                     </div>
                 </div>

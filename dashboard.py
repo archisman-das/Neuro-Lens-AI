@@ -551,12 +551,15 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
 def find_weights_path(model_name):
     """Search artifact directories for a usable classifier weights file.
 
-    Two-pass search:
-      1. Any .pt in any directory wins outright. The PyTorch checkpoints from
-         retrain_classifiers_torch.py are the only ones that actually load.
-      2. Fall back to .h5 only if no .pt is found anywhere. The upstream .h5
-         files in real_eval_fixed/ etc. are Git LFS pointer stubs (134 bytes)
-         that h5py rejects with 'file signature not found'.
+    Three-pass search:
+      1. Any .pt in any directory wins outright (best for Grad-CAM since the
+         PyTorch graph is needed for autograd).
+      2. Any .onnx (Spaces deploy path - we ship only ONNX into the container).
+         Returned with .onnx suffix so the caller knows to skip the PyTorch
+         load path; predict_image already prefers ONNX when both exist.
+      3. Fall back to .h5 only if neither exists. The upstream .h5 files in
+         real_eval_fixed/ etc. are Git LFS pointer stubs (134 bytes) that
+         h5py rejects with 'file signature not found'.
     """
     # Pass 1: any .pt
     for artifacts_dir in ARTIFACTS_DIRS:
@@ -568,7 +571,17 @@ def find_weights_path(model_name):
             return explicit_pt
         for candidate in model_dir.glob('*.pt'):
             return candidate
-    # Pass 2: any .h5 (skip LFS pointer stubs that are <1 KB)
+    # Pass 2: any .onnx (Spaces deploy)
+    for artifacts_dir in ARTIFACTS_DIRS:
+        model_dir = artifacts_dir / model_name
+        if not model_dir.exists():
+            continue
+        explicit_onnx = model_dir / 'best_weights.onnx'
+        if explicit_onnx.exists():
+            return explicit_onnx
+        for candidate in model_dir.glob('*.onnx'):
+            return candidate
+    # Pass 3: any .h5 (skip LFS pointer stubs that are <1 KB)
     for artifacts_dir in ARTIFACTS_DIRS:
         model_dir = artifacts_dir / model_name
         if not model_dir.exists():
@@ -697,10 +710,19 @@ def predict_image(model_name, image_bytes):
     cache_key = (model_name, str(weights_path), weights_path.stat().st_mtime)
     cached = MODEL_CACHE.get(cache_key)
     is_torch = weights_path.suffix == '.pt'
+    is_onnx_only = weights_path.suffix == '.onnx'
 
     if cached is None:
         MODEL_CACHE.clear()
-        if is_torch:
+        if is_onnx_only:
+            # Spaces deploy path: only ONNX is on disk, no PyTorch / TF model
+            # to cache. The forward-pass branch below picks up the same
+            # weights_path through _classifier_onnx_path() and runs via
+            # onnxruntime. Grad-CAM is unavailable (no autograd graph) and
+            # quietly returns None - acceptable on the public demo.
+            cached = ('onnx_only', None, None, model_name != 'cnn')
+            MODEL_CACHE[cache_key] = cached
+        elif is_torch:
             # PyTorch classifier path (the only one that actually works without
             # Git LFS, since the upstream .h5 files are pointer stubs).
             import torch
@@ -1199,6 +1221,59 @@ def _get_status_snapshot() -> dict:
     return snap
 
 
+def _ensure_onnx_models_downloaded():
+    """If the ONNX model files aren't bundled with the container (the case on
+    HuggingFace Spaces, where the 1 GB Space repo budget is too small for
+    ~440 MB of model weights), pull them from a separate HF Model repo at
+    startup. Model repos have much larger free quotas and are the canonical
+    HF pattern for distributing trained weights.
+
+    Override `HF_MODELS_REPO` env var to point at your own Model repo.
+    Files are downloaded once and cached on disk; subsequent boots reuse
+    the cache instantly.
+    """
+    repo = os.environ.get('HF_MODELS_REPO', 'Tubai01/neurolens-models')
+    needed = [
+        # (local target relative to ROOT_DIR, repo-relative path)
+        ('segmentation_artifacts/attention_unet_v3/best_model.onnx',
+         'attention_unet_v3/best_model.onnx'),
+        ('segmentation_artifacts/attention_unet_t1c/best_model.onnx',
+         'attention_unet_t1c/best_model.onnx'),
+        ('real_eval_current/cnn/best_weights.onnx',
+         'cnn/best_weights.onnx'),
+        ('real_eval_current/transfer/best_weights.onnx',
+         'transfer/best_weights.onnx'),
+        ('real_eval_current/vit/best_weights.onnx',
+         'vit/best_weights.onnx'),
+    ]
+    missing = [(loc, rep) for loc, rep in needed if not (ROOT_DIR / loc).exists()]
+    if not missing:
+        logger.info('all_onnx_models_already_present')
+        return
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        logger.warning('huggingface_hub_not_installed missing_models=%d', len(missing))
+        return
+    import shutil as _shutil
+    token = os.environ.get('HF_TOKEN') or None  # public Model repos work tokenless too
+    for local_rel, repo_rel in missing:
+        local = ROOT_DIR / local_rel
+        try:
+            t0 = time.perf_counter()
+            downloaded = hf_hub_download(
+                repo_id=repo, filename=repo_rel,
+                repo_type='model', token=token,
+            )
+            local.parent.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(downloaded, local)
+            ms = (time.perf_counter() - t0) * 1000
+            logger.info('downloaded_model file=%s repo=%s elapsed_ms=%.0f',
+                         local_rel, repo, ms)
+        except Exception as exc:
+            logger.warning('download_failed file=%s err=%s', local_rel, exc)
+
+
 def _warm_models_async():
     """Pre-load ONNX sessions for the cascade pair (v3 + T1c) and the 3
     classifiers in a background thread so the first /predict and /segment
@@ -1247,6 +1322,10 @@ def run(port=8501, host: str = ''):
     server = ThreadingHTTPServer(address, DashboardHandler)
     url = f'http://localhost:{port}/' if not host else f'http://{host}:{port}/'
     logger.info('neurolens_dashboard_starting version=%s url=%s', SERVER_VERSION, url)
+    # Pull ONNX weights from HF Hub if they aren't bundled (Spaces deploy
+    # path). Synchronous so the first request never races a half-downloaded
+    # model; ~30 s on first boot, instant on subsequent boots (cached).
+    _ensure_onnx_models_downloaded()
     _warm_models_async()
     print(f'NeuroLens AI dashboard running at {url}')
     print(f'Version: {SERVER_VERSION}.  Endpoints: /predict /segment /explain '

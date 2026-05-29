@@ -21,3 +21,7 @@ requests>=2.31
 onnx>=1.16
 onnxruntime>=1.18
 pyyaml>=6.0
+# huggingface_hub: pulls ONNX weights from the separate Tubai01/neurolens-models
+# Model repo on container boot (we don't bundle them inside the Space repo
+# because the Space free-tier cap is 1 GB total).
+huggingface_hub>=0.24

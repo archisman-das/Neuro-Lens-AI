@@ -1015,14 +1015,23 @@ class NeuroLensApp {
                     </div>
                     <p id="explainConfidence" class="explain-confidence-detail">--</p>
                 </div>
-                <div class="explain-section">
+                <div class="explain-section explain-negative-explanation" id="explainNegativeSection" style="display:none;">
+                    <h4>Why the Classifiers Ruled This Out</h4>
+                    <pre id="explainNegativeExplanation" class="explain-grade"></pre>
+                </div>
+                <div class="explain-section" id="explainFindingsSection">
                     <h4>Structured Findings</h4>
                     <dl class="explain-findings" id="explainFindings"></dl>
                 </div>
-                <div class="explain-section">
+                <div class="explain-section" id="explainGradeSection">
                     <h4>Grade-Evidence Score</h4>
                     <pre id="explainGradeEvidence" class="explain-grade">--</pre>
                 </div>
+                <details class="explain-raw" id="explainFpRegionSection" style="display:none;">
+                    <summary>False-positive region analysis (debug)</summary>
+                    <dl class="explain-findings" id="explainFpRegionFindings"></dl>
+                    <pre id="explainFpRegionGrade" class="explain-grade"></pre>
+                </details>
                 <div class="explain-section">
                     <h4>Differential Diagnosis (citation-checked)</h4>
                     <div id="explainDifferentialList" class="differential-list"></div>
@@ -1167,32 +1176,69 @@ class NeuroLensApp {
         const fill = document.getElementById('explainConfFill');
         if (fill) fill.style.width = `${(score == null) ? 0 : score * 100}%`;
 
-        // --- Structured findings (8 domains) ------------------------------
-        const findings = document.getElementById('explainFindings');
-        if (findings) {
-            const fmap = exp.findings || {};
-            const order = [
-                ['geometry', 'Geometry'],
-                ['localization', 'Localization'],
-                ['intensity', 'Intensity'],
-                ['texture', 'Texture'],
-                ['multimodal', 'Multimodal'],
-                ['morphology_margins', 'Morphology & Margins'],
-                ['internal_architecture', 'Internal Architecture'],
-                ['mass_effect', 'Mass Effect'],
-            ];
-            findings.innerHTML = order
-                .filter(([k]) => fmap[k])
-                .map(([k, label]) => `<dt>${label}</dt><dd>${this.escapeHtml(fmap[k])}</dd>`)
-                .join('');
-            if (!findings.innerHTML) {
-                findings.innerHTML = '<dd style="opacity:0.6;">No structured findings returned.</dd>';
+        // --- Classifier-negative explanation (shown only when verdict=no_tumor) ---
+        const negativeSection = document.getElementById('explainNegativeSection');
+        const negativeText = document.getElementById('explainNegativeExplanation');
+        const negExp = exp.classifier_negative_explanation;
+        if (negativeSection && negativeText) {
+            if (negExp) {
+                negativeSection.style.display = 'block';
+                negativeText.textContent = negExp;
+            } else {
+                negativeSection.style.display = 'none';
+                negativeText.textContent = '';
             }
         }
 
+        const findingDomains = [
+            ['geometry', 'Geometry'],
+            ['localization', 'Localization'],
+            ['intensity', 'Intensity'],
+            ['texture', 'Texture'],
+            ['multimodal', 'Multimodal'],
+            ['morphology_margins', 'Morphology & Margins'],
+            ['internal_architecture', 'Internal Architecture'],
+            ['mass_effect', 'Mass Effect'],
+        ];
+        const renderFindingsInto = (el, fmap) => {
+            if (!el || !fmap) return false;
+            const html = findingDomains
+                .filter(([k]) => fmap[k])
+                .map(([k, label]) => `<dt>${label}</dt><dd>${this.escapeHtml(fmap[k])}</dd>`)
+                .join('');
+            el.innerHTML = html;
+            return Boolean(html);
+        };
+
+        // --- Structured findings (8 domains, primary report) --------------
+        const findingsEl = document.getElementById('explainFindings');
+        const findingsSection = document.getElementById('explainFindingsSection');
+        const hasFindings = renderFindingsInto(findingsEl, exp.findings || {});
+        // Hide the whole section when the deterministic narrative produced no
+        // primary findings (i.e. verdict was no_tumor and the U-Net features
+        // got moved into the FP-region debug bucket below).
+        if (findingsSection) findingsSection.style.display = hasFindings ? '' : 'none';
+
         // --- Grade evidence narrative -------------------------------------
         const gradeEl = document.getElementById('explainGradeEvidence');
-        if (gradeEl) gradeEl.textContent = exp.grade_evidence_narrative || '--';
+        const gradeSection = document.getElementById('explainGradeSection');
+        const gradeText = exp.grade_evidence_narrative || '';
+        if (gradeEl) gradeEl.textContent = gradeText || '--';
+        if (gradeSection) gradeSection.style.display = gradeText ? '' : 'none';
+
+        // --- False-positive region debug (collapsible) --------------------
+        // When the classifier verdict was no_tumor, the U-Net feature
+        // breakdown was preserved here under a clearly-labeled details block
+        // so the raw data is accessible but not pretending to be a clinical
+        // finding.
+        const fpSection = document.getElementById('explainFpRegionSection');
+        const fpFindings = document.getElementById('explainFpRegionFindings');
+        const fpGrade = document.getElementById('explainFpRegionGrade');
+        const fpAnalysis = exp.fp_region_analysis || null;
+        const fpGradeText = exp.fp_grade_evidence || '';
+        const hasFpAnalysis = renderFindingsInto(fpFindings, fpAnalysis || {});
+        if (fpGrade) fpGrade.textContent = fpGradeText;
+        if (fpSection) fpSection.style.display = (hasFpAnalysis || fpGradeText) ? '' : 'none';
 
         // --- Differential with citations & origin tags --------------------
         const diff = document.getElementById('explainDifferentialList');

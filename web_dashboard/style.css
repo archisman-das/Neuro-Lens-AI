@@ -1826,6 +1826,19 @@ body::before {
 }
 .batch-band { font-size: 10.5px; color: var(--text-muted); margin-left: 4px; }
 
+.explain-negative-explanation pre {
+    background: #ecfdf5;
+    color: #065f46;
+    border-left: 4px solid #10b981;
+    padding: 14px 16px;
+    border-radius: var(--radius-md, 8px);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 /* Loading Overlay - Enhanced */
 .loading-overlay {
     position: fixed;

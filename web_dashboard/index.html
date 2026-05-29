@@ -618,17 +618,30 @@
                                 <p id="explainConfidence" class="explain-confidence-detail">--</p>
                             </div>
 
+                            <!-- Classifier-negative explanation (shown only when verdict=no_tumor) -->
+                            <div class="explain-section explain-negative-explanation" id="explainNegativeSection" style="display:none;">
+                                <h4>Why the Classifiers Ruled This Out</h4>
+                                <pre id="explainNegativeExplanation" class="explain-grade"></pre>
+                            </div>
+
                             <!-- Structured findings (radiology-style, 8 domains) -->
-                            <div class="explain-section">
+                            <div class="explain-section" id="explainFindingsSection">
                                 <h4>Structured Findings</h4>
                                 <dl class="explain-findings" id="explainFindings"></dl>
                             </div>
 
                             <!-- Grade evidence narrative -->
-                            <div class="explain-section">
+                            <div class="explain-section" id="explainGradeSection">
                                 <h4>Grade-Evidence Score</h4>
                                 <pre id="explainGradeEvidence" class="explain-grade">--</pre>
                             </div>
+
+                            <!-- False-positive region analysis (debug, collapsible) -->
+                            <details class="explain-raw" id="explainFpRegionSection" style="display:none;">
+                                <summary>False-positive region analysis (debug)</summary>
+                                <dl class="explain-findings" id="explainFpRegionFindings"></dl>
+                                <pre id="explainFpRegionGrade" class="explain-grade"></pre>
+                            </details>
 
                             <!-- Differential with citations -->
                             <div class="explain-section">

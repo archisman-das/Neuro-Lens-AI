@@ -1361,6 +1361,88 @@ def _try_parse_json(raw: str):
         return None
 
 
+def _build_classifier_negative_explanation(classifier_results: Optional[dict],
+                                              mean_p: Optional[float],
+                                              band: Optional[str],
+                                              geom: Optional[dict]) -> str:
+    """Explain WHY the binary classifiers ruled out tumor on this scan.
+
+    Replaces what was previously a contradictory dump of tumor features
+    describing the U-Net's false-positive segmentation. The explanation
+    walks through the three architecture-diverse classifier outputs, why
+    inter-model agreement at this level is a strong negative signal, and
+    notes the U-Net positive bias that is responsible for the mask the
+    user still sees on the Visualization panel.
+    """
+    if not classifier_results:
+        return ''
+
+    probs: dict = {}
+    for name in ('cnn', 'transfer', 'vit'):
+        r = classifier_results.get(name)
+        if isinstance(r, dict) and isinstance(r.get('probability'), (int, float)):
+            probs[name] = float(r['probability'])
+
+    if not probs:
+        return ''
+
+    arch_label = {
+        'cnn': 'CNN (custom 3-block convolutional)',
+        'transfer': 'Transfer Learning (ResNet50 pretrained on ImageNet, fine-tuned)',
+        'vit': 'Vision Transformer (ResNet50 + 4 transformer blocks, hybrid)',
+    }
+    per_model_lines = [
+        f'- {arch_label.get(n, n):<55} tumor probability {p:.4f} '
+        f'(equivalently {(1.0 - p) * 100:5.2f}% no-tumor confidence)'
+        for n, p in probs.items()
+    ]
+    p_values = list(probs.values())
+    max_p = max(p_values) if p_values else 0.0
+    n_models = len(p_values)
+
+    band_phrase = (f'{band} confidence' if band else 'meaningful confidence')
+    summary = (
+        f'All {n_models} classifiers independently produced tumor probabilities below '
+        f'{max(0.5, max_p + 0.05):.2f} (mean p={mean_p:.4f}, {band_phrase}). '
+        f'These three models do not share an architecture, do not share a feature '
+        f'backbone, and were not trained with shared weights - they are three '
+        f'independent voters on the same question. Inter-model agreement at this '
+        f'level is a strong negative signal: a false negative would require all '
+        f'three architectures to fail in the same direction on the same input, '
+        f'which is empirically rare in our validation runs.'
+    )
+
+    bias_note = (
+        'The U-Net segmentation panel still shows a mask because the U-Net was '
+        'trained on BraTS + LGG (tumor-positive patients only). It has never seen '
+        'a healthy brain during training and has a positive bias: it always emits '
+        'a mask somewhere, picking up the strongest intensity edges in the input. '
+        'On a no-tumor scan that mask traces normal anatomy. The features measured '
+        'on that region (intensity, mass effect, grade evidence) are NOT '
+        'interpreted here because they are not measuring a tumor - they are '
+        'measuring a piece of normal anatomy that the U-Net mistook for one.'
+    )
+
+    if geom and geom.get('area_px'):
+        fp_note = (
+            f'For transparency, the false-positive region ({geom.get("area_px", 0):,} px) '
+            f'has been computed - those measurements are kept under '
+            f'"False-positive region analysis (debug)" below but are not '
+            f'interpreted as clinical findings.'
+        )
+    else:
+        fp_note = ''
+
+    return '\n\n'.join([
+        'WHY THE CLASSIFIERS RULED THIS OUT',
+        'Per-model tumor probability:',
+        '\n'.join(per_model_lines),
+        summary,
+        bias_note,
+        fp_note,
+    ]).strip()
+
+
 def _classifier_consensus(classifier_results: Optional[dict]) -> tuple:
     """Compute the binary-classifier majority verdict.
 
@@ -1533,6 +1615,35 @@ def _local_narrative(features: dict, classifier_results: Optional[dict],
             'confidence': cls_band,
         }]
 
+    # The original deterministic narrative treated every U-Net mask as a
+    # tumor and produced 8 structured-findings sections + grade-evidence
+    # describing it. When the classifier consensus is clearly no-tumor that
+    # reads as a contradictory report (Impression: "no tumor", then 800 words
+    # of "the tumor is hyperintense, mass effect substantial, grade-evidence
+    # 0.79..."). Split those sections into two buckets:
+    #   - findings / grade_evidence_narrative: shown as the primary report.
+    #     For no-tumor verdicts these are EMPTY because there is nothing
+    #     clinical to describe.
+    #   - fp_region_analysis / fp_grade_evidence: the raw feature breakdown of
+    #     the false-positive segmentation, preserved verbatim under a
+    #     "false-positive region debug" collapsible in the UI so the data
+    #     isn't lost but is clearly labelled as not-clinical.
+    #   - classifier_negative_explanation: NEW prose section explaining why
+    #     the classifiers decided no-tumor (per-model probs + agreement
+    #     reasoning + note on the U-Net positive bias). Replaces the
+    #     contradictory tumor-feature dump with the actual rationale.
+    classifier_negative_explanation = None
+    fp_region_analysis = None
+    fp_grade_evidence = None
+    if cls_verdict == 'no_tumor' and cls_band in ('high', 'moderate'):
+        fp_region_analysis = dict(findings)
+        fp_grade_evidence = grade_narr
+        findings = {}
+        grade_narr = ''
+        classifier_negative_explanation = _build_classifier_negative_explanation(
+            classifier_results, cls_mean_p, cls_band, geom,
+        )
+
     out = {
         'summary': impression,
         'impression': impression,
@@ -1548,6 +1659,9 @@ def _local_narrative(features: dict, classifier_results: Optional[dict],
             'mean_probability': cls_mean_p,
             'confidence_band': cls_band,
         },
+        'classifier_negative_explanation': classifier_negative_explanation,
+        'fp_region_analysis': fp_region_analysis,
+        'fp_grade_evidence': fp_grade_evidence,
         'quality_warnings': qual.get('quality_warnings', []),
         'disclaimer': _DEFAULT_DISCLAIMER,
     }

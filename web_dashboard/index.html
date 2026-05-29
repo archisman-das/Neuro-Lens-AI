@@ -78,52 +78,19 @@
             </div>
 
             <div class="sidebar-section">
-                <h3 class="sidebar-title">Recent Scans</h3>
-                <div class="recent-list">
-                    <div class="recent-item">
-                        <div class="recent-icon tumor">T</div>
-                        <div class="recent-info">
-                            <span class="recent-id">SCAN-2024-0847</span>
-                            <span class="recent-time">2 hours ago</span>
-                        </div>
-                        <span class="recent-status positive">Tumor</span>
-                    </div>
-                    <div class="recent-item">
-                        <div class="recent-icon normal">N</div>
-                        <div class="recent-info">
-                            <span class="recent-id">SCAN-2024-0846</span>
-                            <span class="recent-time">5 hours ago</span>
-                        </div>
-                        <span class="recent-status negative">Normal</span>
-                    </div>
-                    <div class="recent-item">
-                        <div class="recent-icon tumor">T</div>
-                        <div class="recent-info">
-                            <span class="recent-id">SCAN-2024-0845</span>
-                            <span class="recent-time">Yesterday</span>
-                        </div>
-                        <span class="recent-status positive">Tumor</span>
-                    </div>
+                <h3 class="sidebar-title">Recent Scans <span class="sidebar-sublabel">this session</span></h3>
+                <div class="recent-list" id="recentScansList">
+                    <div class="recent-empty">No scans yet. Upload an MRI to begin.</div>
                 </div>
             </div>
 
             <div class="sidebar-section">
-                <h3 class="sidebar-title">System Status</h3>
-                <div class="system-status">
-                    <div class="status-item">
-                        <span class="status-dot online"></span>
-                        <span>Models Loaded</span>
-                        <span class="status-value">3/3</span>
-                    </div>
-                    <div class="status-item">
-                        <span class="status-dot online"></span>
-                        <span>GPU Memory</span>
-                        <span class="status-value">4.2/8 GB</span>
-                    </div>
+                <h3 class="sidebar-title">System Status <span class="sidebar-sublabel" id="statusLastUpdated">--</span></h3>
+                <div class="system-status" id="systemStatusList">
                     <div class="status-item">
                         <span class="status-dot warning"></span>
-                        <span>Queue</span>
-                        <span class="status-value">2 pending</span>
+                        <span>Loading…</span>
+                        <span class="status-value">--</span>
                     </div>
                 </div>
             </div>
@@ -263,13 +230,21 @@
                         <p class="section-subtitle" id="resultsSubtitle">Scan: SCAN-2024-0848 · Analyzed at 2:30 PM</p>
                     </div>
                     <div class="header-actions">
+                        <button class="btn btn-outline" id="printBtn" title="Open the browser print dialog to save the report as PDF">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 6 2 18 2 18 9"/>
+                                <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>
+                                <rect x="6" y="14" width="12" height="8"/>
+                            </svg>
+                            Print / PDF
+                        </button>
                         <button class="btn btn-outline" id="exportBtn">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                                 <polyline points="7 10 12 15 17 10"/>
                                 <line x1="12" y1="15" x2="12" y2="3"/>
                             </svg>
-                            Export Report
+                            Export JSON
                         </button>
                         <button class="btn btn-primary" id="newAnalysisBtn">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

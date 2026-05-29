@@ -73,6 +73,37 @@ DEFAULT_OLLAMA_MODEL_VISION = os.environ.get('OLLAMA_MODEL_VISION', DEFAULT_OLLA
 DEFAULT_ANTHROPIC_MODEL = os.environ.get('ANTHROPIC_MODEL', 'claude-sonnet-4-6')
 DEFAULT_OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4o-mini')
 
+# HuggingFace Inference Providers - routes to Groq / Together / Fireworks /
+# Replicate / etc. under the hood, all hosting OPEN-WEIGHT models. One token
+# (HF_TOKEN) authenticates against all providers. Free tier + small HF credit
+# allowance per month makes this the right call for a public Spaces demo
+# while keeping the LLM open source (we only call open weights like Llama 3.3
+# and Qwen2.5-VL, never closed-weight Claude/GPT/Gemini).
+#
+# Two model slots to mirror the local Ollama text+vision split:
+#   HF_MODEL_TEXT     - text-only LLM for Patterns A (polish) and B
+#                        (differential expansion). Llama 3.3 70B by default;
+#                        strictly better at JSON-schema compliance than the
+#                        local qwen2.5:1.5b we use offline.
+#   HF_MODEL_VISION   - vision-language LLM for Pattern C (visual co-observer).
+#                        Llama 3.2 90B Vision by default; Qwen2.5-VL 72B
+#                        (Qwen/Qwen2.5-VL-72B-Instruct) is also a strong pick.
+DEFAULT_HF_ROUTER_BASE = os.environ.get(
+    'HF_INFERENCE_BASE', 'https://router.huggingface.co/v1'
+)
+DEFAULT_HF_MODEL_TEXT = os.environ.get(
+    'HF_MODEL_TEXT', 'meta-llama/Llama-3.3-70B-Instruct'
+)
+DEFAULT_HF_MODEL_VISION = os.environ.get(
+    # Gemma 3 27B IT is Google's open-weight multimodal model and is enabled
+    # by default on the HF Inference Providers router for the standard free
+    # tier. Llama 3.2 Vision and Qwen2.5-VL are higher quality on paper but
+    # are gated behind specific provider plans (HuggingFace Pro, Together
+    # paid tier, etc.). Override with HF_MODEL_VISION when you have access
+    # to a stronger vision model.
+    'HF_MODEL_VISION', 'google/gemma-3-27b-it'
+)
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -148,12 +179,15 @@ def explain(
         return payload
 
     model_used = (os.environ.get('OLLAMA_MODEL', DEFAULT_OLLAMA_MODEL) if backend == 'ollama'
+                  else f'{DEFAULT_HF_MODEL_TEXT} + {DEFAULT_HF_MODEL_VISION}' if backend == 'hf_inference'
                   else DEFAULT_ANTHROPIC_MODEL if backend == 'anthropic'
                   else DEFAULT_OPENAI_MODEL if backend == 'openai'
                   else 'deterministic')
     backend_used = backend
 
-    # Build the image set once. Ollama gets only 2 to fit VRAM.
+    # Build the image set once. Ollama gets only 2 to fit VRAM. HF Inference
+    # routes to cloud GPUs so the 4-image set is fine and gives the visual
+    # observer richer context.
     image_set = ([('original_mri', image_rgb), ('overlay', overlay_rgb)]
                  if backend == 'ollama' else
                  [('original_mri', image_rgb),
@@ -183,6 +217,21 @@ def explain(
     visual_observations: list[dict] = []
     visual_disagreements: list[dict] = []
 
+    # Per-pass model selection. Each backend has its own text vs vision split
+    # so we can use a small fast model for prose patterns and a stronger
+    # vision-capable model for image co-observation.
+    if backend == 'ollama':
+        text_model = DEFAULT_OLLAMA_MODEL_TEXT
+        vision_model = DEFAULT_OLLAMA_MODEL_VISION
+    elif backend == 'hf_inference':
+        text_model = DEFAULT_HF_MODEL_TEXT
+        vision_model = DEFAULT_HF_MODEL_VISION
+    else:
+        # Anthropic / OpenAI pick one strong model that handles both text +
+        # vision. We keep the model name as model_used for reporting.
+        text_model = model_used
+        vision_model = model_used
+
     # ---- Patterns A + B: text-only combined call --------------------------
     try:
         ab_prompt = _build_text_combined_prompt(deterministic, features)
@@ -191,9 +240,10 @@ def explain(
         # ~1200 tokens. 1.5b qwen2.5 is happy at 3072. Text-only KV growth is
         # small enough not to OOM.
         raw_ab = _call_backend_with_model(backend, ab_prompt, [], [],
-                                            model_override=DEFAULT_OLLAMA_MODEL_TEXT,
+                                            model_override=text_model,
                                             num_ctx_override=3072)
-        print(f'[llm_explain] text-pass raw ({len(raw_ab)} chars): {raw_ab[:400]}', flush=True)
+        logger_msg = f'[llm_explain] text-pass model={text_model} raw_chars={len(raw_ab)}'
+        print(logger_msg, flush=True)
         ab_parsed = _try_parse_json(raw_ab) or {}
         # Polish
         polish_raw = ab_parsed.get('polished_impression') or ''
@@ -202,7 +252,7 @@ def explain(
         )
         llm_passes['polish'] = {
             'status': ('ok' if polished_text else ('rejected' if polish_warnings else 'empty')),
-            'model': DEFAULT_OLLAMA_MODEL_TEXT if backend == 'ollama' else model_used,
+            'model': text_model,
             'raw_chars': len(polish_raw) if isinstance(polish_raw, str) else 0,
             'warnings': polish_warnings,
         }
@@ -215,7 +265,7 @@ def explain(
         llm_differentials = accepted
         llm_passes['differential_expansion'] = {
             'status': 'ok',
-            'model': DEFAULT_OLLAMA_MODEL_TEXT if backend == 'ollama' else model_used,
+            'model': text_model,
             'accepted_count': len(accepted),
             'rejected_count': len(rejected),
             'rejected_bullets': rejected,
@@ -223,27 +273,27 @@ def explain(
         }
     except Exception as exc:
         err = f'{type(exc).__name__}: {exc}'
-        llm_passes['polish'] = {'status': 'error', 'error': err,
-                                 'model': DEFAULT_OLLAMA_MODEL_TEXT}
+        llm_passes['polish'] = {'status': 'error', 'error': err, 'model': text_model}
         llm_passes['differential_expansion'] = {'status': 'error', 'error': err,
-                                                  'model': DEFAULT_OLLAMA_MODEL_TEXT}
+                                                  'model': text_model}
 
-    # ---- Pattern C: vision call (best-effort, falls back on OOM) ----------
+    # ---- Pattern C: vision call (best-effort, falls back on OOM/quota) ----
     try:
         if not images_b64:
-            llm_passes['visual_observer'] = {'status': 'skipped', 'reason': 'no_images_provided'}
+            llm_passes['visual_observer'] = {'status': 'skipped',
+                                              'reason': 'no_images_provided'}
         else:
             visual_prompt = _build_visual_prompt(features)
             raw_vis = _call_backend_with_model(
                 backend, visual_prompt, images_b64, image_labels,
-                model_override=DEFAULT_OLLAMA_MODEL_VISION,
+                model_override=vision_model,
             )
             observations, disagreements = _validate_visual_observations(raw_vis, features)
             visual_observations = observations
             visual_disagreements = disagreements
             llm_passes['visual_observer'] = {
                 'status': 'ok',
-                'model': DEFAULT_OLLAMA_MODEL_VISION if backend == 'ollama' else model_used,
+                'model': vision_model,
                 'observation_count': len(observations),
                 'disagreement_count': len(disagreements),
                 'raw_chars': len(raw_vis or ''),
@@ -251,14 +301,24 @@ def explain(
     except Exception as exc:
         err = f'{type(exc).__name__}: {exc}'
         is_oom = 'system memory' in err.lower() or 'memory' in err.lower()
+        is_quota = 'quota' in err.lower() or '429' in err
+        if is_oom:
+            status, hint = 'skipped_insufficient_ram', (
+                'Close apps to free RAM for the local vision model, '
+                'or switch to HF Inference by setting HF_TOKEN.'
+            )
+        elif is_quota:
+            status, hint = 'skipped_quota_exhausted', (
+                'HF Inference free-tier quota reached. Add HF Pro or fall back '
+                'to local Ollama by unsetting HF_TOKEN.'
+            )
+        else:
+            status, hint = 'error', None
         llm_passes['visual_observer'] = {
-            'status': 'skipped_insufficient_ram' if is_oom else 'error',
+            'status': status,
             'error': err,
-            'model': DEFAULT_OLLAMA_MODEL_VISION,
-            'recovery_hint': (
-                'Close other applications to free system RAM (need ~7 GiB for qwen2.5vl:3b), '
-                'or set OLLAMA_MODEL_VISION=moondream for a much smaller (~3 GiB) vision model.'
-            ) if is_oom else None,
+            'model': vision_model,
+            'recovery_hint': hint,
         }
 
     # ---- Assemble final payload ------------------------------------------
@@ -298,14 +358,17 @@ def _call_backend_with_model(backend: str, prompt_text: str, images_b64: list,
                                num_ctx_override: Optional[int] = None) -> str:
     """Dispatch helper that lets a per-pass model override take effect.
 
-    Only Ollama honors the override (the small text model vs the vision model
+    Ollama and HF Inference honor the override (text model vs vision model
     split). Anthropic/OpenAI continue to use their single DEFAULT model since
-    those calls are not RAM-bound.
+    those backends pick a strong general-purpose model regardless.
     """
     if backend == 'ollama':
         return _call_ollama(prompt_text, images_b64, image_labels,
                              model_override=model_override,
                              num_ctx_override=num_ctx_override)
+    if backend == 'hf_inference':
+        return _call_hf_inference(prompt_text, images_b64, image_labels,
+                                    model_override=model_override)
     if backend == 'anthropic':
         return _call_anthropic(prompt_text, images_b64, image_labels)
     if backend == 'openai':
@@ -821,7 +884,20 @@ def _validate_visual_observations(raw: str, features: dict) -> tuple[list[dict],
 
 
 def _pick_backend() -> str:
-    """Return the first backend that looks usable."""
+    """Return the first usable backend, in this priority order:
+
+      1. HF Inference Providers (HF_TOKEN set) - open-weight models, no local
+         GPU needed, sub-second responses. The right default for the deployed
+         Spaces demo because we don't want to ship the Ollama daemon inside
+         the container (RAM-heavy) and we want to stay open source.
+      2. Local Ollama - the right default on a dev machine with a GPU.
+      3. Anthropic / OpenAI - last-resort closed-weight fallbacks the user
+         opted into by setting the corresponding API key.
+      4. 'none' - run the deterministic radiology report only (zero
+         hallucination, no external call).
+    """
+    if os.environ.get('HF_TOKEN'):
+        return 'hf_inference'
     if _ollama_reachable():
         return 'ollama'
     if os.environ.get('ANTHROPIC_API_KEY'):
@@ -1047,6 +1123,69 @@ def _call_openai(prompt_text: str, images_b64: list[str], image_labels: list[str
     )
     r.raise_for_status()
     choices = r.json().get('choices', [])
+    if not choices:
+        return ''
+    return choices[0]['message']['content'].strip()
+
+
+def _call_hf_inference(prompt_text: str, images_b64: list[str], image_labels: list[str],
+                         *, model_override: Optional[str] = None) -> str:
+    """Call HuggingFace Inference Providers (OpenAI-compatible router endpoint).
+
+    Auth: HF_TOKEN bearer. The router forwards to whichever underlying
+    provider currently hosts the model (Groq / Together / Fireworks / etc.),
+    giving us a single API key for many open-weight models.
+
+    Model selection:
+      - Caller passes `model_override` to choose text vs vision per pass.
+      - If no override, defaults to the text model (HF_MODEL_TEXT).
+
+    The router supports the OpenAI /chat/completions schema with image content
+    parts; we re-use the OpenAI message structure we already build for
+    _call_openai, with one tweak: images go in as data URLs.
+    """
+    if requests is None:
+        raise RuntimeError('requests not installed')
+    token = os.environ.get('HF_TOKEN')
+    if not token:
+        raise RuntimeError('HF_TOKEN not set; cannot call HuggingFace Inference Providers.')
+    model = model_override or DEFAULT_HF_MODEL_TEXT
+
+    content: list[dict] = [{'type': 'text', 'text': prompt_text}]
+    for b64, label in zip(images_b64, image_labels):
+        content.append({
+            'type': 'image_url',
+            'image_url': {'url': f'data:image/png;base64,{b64}'},
+        })
+        content.append({'type': 'text', 'text': f'(image labeled "{label}")'})
+
+    body = {
+        'model': model,
+        'messages': [{'role': 'user', 'content': content}],
+        'max_tokens': int(os.environ.get('HF_MAX_TOKENS', '1500')),
+        'temperature': float(os.environ.get('HF_TEMPERATURE', '0.2')),
+        'stream': False,
+    }
+    r = requests.post(
+        f'{DEFAULT_HF_ROUTER_BASE}/chat/completions',
+        json=body,
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+        },
+        timeout=120,
+    )
+    if not r.ok:
+        try:
+            err = r.json()
+        except Exception:
+            err = r.text
+        raise requests.HTTPError(
+            f'HF Inference {r.status_code} (model={model}): {str(err)[:400]}',
+            response=r,
+        )
+    payload = r.json()
+    choices = payload.get('choices', [])
     if not choices:
         return ''
     return choices[0]['message']['content'].strip()

@@ -16,6 +16,12 @@ class NeuroLensApp {
     init() {
         this.bindEvents();
         this.loadMetrics();
+        this.loadStatus();
+        // Refresh the sidebar status every 30 s. Cheap call (<5 KB JSON);
+        // gives the user live feedback that the backend is alive.
+        if (!this._statusTimer) {
+            this._statusTimer = setInterval(() => this.loadStatus(), 30_000);
+        }
         this.setupNavigation();
     }
     
@@ -58,6 +64,9 @@ class NeuroLensApp {
         document.getElementById('exportBtn').addEventListener('click', () => {
             this.exportReport();
         });
+
+        const printBtn = document.getElementById('printBtn');
+        if (printBtn) printBtn.addEventListener('click', () => this.printReport());
         
         // Threshold slider
         const thresholdSlider = document.getElementById('thresholdSlider');
@@ -187,6 +196,14 @@ class NeuroLensApp {
 
             this.currentResults = this.buildResultsFromBackend(patientId, predictionResults, metricsByModel);
             this.currentSegmentation = segmentation;
+
+            // Push to session-scoped Recent Scans sidebar.
+            this.addRecentScan({
+                id: patientId,
+                isPositive: this.currentResults.isPositive,
+                confidence: this.currentResults.confidence,
+                timestamp: Date.now(),
+            });
 
             setTimeout(() => {
                 this.hideLoading();
@@ -573,6 +590,8 @@ class NeuroLensApp {
                 this.currentSegmentation = { result: payload.segmentation, error: null };
                 this.renderSegmentationFromCache();
             }
+            // Persist for the Export Report download.
+            this.currentExplanation = payload.explanation || null;
             this.renderExplanation(payload);
         } catch (err) {
             console.error(err);
@@ -936,59 +955,19 @@ class NeuroLensApp {
         }
     }
     
-    showComingSoonMessage(title, description) {
-        // Create a toast/notification element
+    // Inline toast for real informational events (e.g. "report exported").
+    // Replaces the previous "Coming Soon" placeholder which advertised
+    // unimplemented features.
+    showToast(title, description, level = 'info') {
         const toast = document.createElement('div');
-        toast.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: var(--gray-800);
-            color: white;
-            padding: 20px 24px;
-            border-radius: var(--radius-lg);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            z-index: 10000;
-            max-width: 400px;
-            animation: slideIn 0.3s ease-out;
-        `;
+        toast.className = `nl-toast nl-toast-${level}`;
         toast.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 24px; height: 24px; color: var(--primary);">
-                    <circle cx="12" cy="12" r="10"/>
-                    <path d="M12 16v-4"/>
-                    <path d="M12 8h.01"/>
-                </svg>
-                <strong style="font-size: 16px;">${title}</strong>
-            </div>
-            <p style="font-size: 14px; opacity: 0.9; margin: 0;">${description}</p>
-            <p style="font-size: 12px; opacity: 0.7; margin-top: 8px; margin-bottom: 0;">Coming Soon</p>
+            <strong class="nl-toast-title">${this.escapeHtml(title)}</strong>
+            <p class="nl-toast-desc">${this.escapeHtml(description || '')}</p>
         `;
-        
-        // Add animation keyframes
-        if (!document.getElementById('toast-styles')) {
-            const style = document.createElement('style');
-            style.id = 'toast-styles';
-            style.textContent = `
-                @keyframes slideIn {
-                    from { transform: translateX(100%); opacity: 0; }
-                    to { transform: translateX(0); opacity: 1; }
-                }
-                @keyframes slideOut {
-                    from { transform: translateX(0); opacity: 1; }
-                    to { transform: translateX(100%); opacity: 0; }
-                }
-            `;
-            document.head.appendChild(style);
-        }
-        
         document.body.appendChild(toast);
-        
-        // Remove after 4 seconds
-        setTimeout(() => {
-            toast.style.animation = 'slideOut 0.3s ease-in forwards';
-            setTimeout(() => toast.remove(), 300);
-        }, 4000);
+        setTimeout(() => { toast.classList.add('nl-toast-exit'); }, 3500);
+        setTimeout(() => { toast.remove(); }, 4000);
     }
     
     showLoading() {
@@ -999,27 +978,52 @@ class NeuroLensApp {
         document.getElementById('loadingOverlay').style.display = 'none';
     }
     
+    /**
+     * Export the analysis as JSON. Includes the classifier results, the cascade
+     * segmentation decision, the full explanation payload (impression,
+     * structured findings, grade evidence, differential with citations,
+     * LLM-pass status), and the raw measured features. Sufficient to
+     * reproduce the on-screen report from the file alone.
+     */
     exportReport() {
-        if (!this.currentResults) return;
-        
+        if (!this.currentResults) {
+            this.showToast('No analysis to export', 'Run an analysis first.', 'error');
+            return;
+        }
         const report = {
-            patientId: this.currentResults.patientId,
+            schema_version: '2.1',
+            patient_id: this.currentResults.patientId,
             timestamp: this.currentResults.timestamp,
             diagnosis: this.currentResults.diagnosis,
             confidence: this.currentResults.confidence,
-            bestModel: this.currentResults.bestModel.modelLabel,
-            modelResults: this.currentResults.models,
-            uncertainty: this.currentResults.uncertainty,
-            robustness: this.currentResults.robustness
+            best_model: this.currentResults.bestModel?.modelLabel,
+            processing_time_seconds: this.currentResults.processingTime,
+            model_results: this.currentResults.models,
+            segmentation: this.currentSegmentation?.result || null,
+            explanation: this.currentExplanation || null,
         };
-        
         const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `report_${this.currentResults.patientId}.json`;
+        a.download = `neurolens_${this.currentResults.patientId}.json`;
         a.click();
         URL.revokeObjectURL(url);
+        this.showToast('Report exported', `${a.download} downloaded.`, 'success');
+    }
+
+    /**
+     * Open the browser print dialog scoped to the result panel.
+     * The print stylesheet hides the chrome (sidebar, top bar, controls,
+     * raw-features blob) and prints just the radiology-style report. The
+     * user picks "Save as PDF" in the print dialog for a portable file.
+     */
+    printReport() {
+        if (!this.currentResults) {
+            this.showToast('No analysis to print', 'Run an analysis first.', 'error');
+            return;
+        }
+        window.print();
     }
     
     async loadMetrics() {
@@ -1033,15 +1037,157 @@ class NeuroLensApp {
             console.log('Metrics not available (development mode)');
         }
     }
-    
+
+    /**
+     * Live /status polling: server returns real ONNX session count, GPU
+     * memory, LLM backend availability. Replaces the previous hard-coded
+     * "3/3 models, 4.2/8 GB, 2 pending" mock that was misleading.
+     */
+    async loadStatus() {
+        const list = document.getElementById('systemStatusList');
+        const lastUpdated = document.getElementById('statusLastUpdated');
+        try {
+            const r = await fetch('/status', { headers: { 'Accept': 'application/json' } });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const s = await r.json();
+            const rows = [];
+
+            // Inference runtime row.
+            const ort = s.onnx_runtime || {};
+            const ortOk = !!ort.available;
+            const provider = (ort.providers || []).find(p => p.includes('CUDA')) ? 'CUDA' :
+                             (ort.providers || []).find(p => p.includes('CPU')) ? 'CPU' : '-';
+            rows.push(`
+                <div class="status-item">
+                    <span class="status-dot ${ortOk ? 'online' : 'offline'}"></span>
+                    <span>Inference Runtime</span>
+                    <span class="status-value">${ortOk ? `ONNX ${provider}` : 'PyTorch'}</span>
+                </div>`);
+
+            // Loaded sessions
+            rows.push(`
+                <div class="status-item">
+                    <span class="status-dot online"></span>
+                    <span>Loaded Sessions</span>
+                    <span class="status-value">${ort.sessions_loaded ?? 0}</span>
+                </div>`);
+
+            // GPU memory (only when actually available)
+            const gpu = s.gpu || {};
+            if (gpu.available) {
+                const usedGb = ((gpu.memory_used_mb || 0) / 1024).toFixed(1);
+                const totalGb = ((gpu.memory_total_mb || 0) / 1024).toFixed(1);
+                const pct = gpu.memory_total_mb ? (gpu.memory_used_mb / gpu.memory_total_mb) * 100 : 0;
+                rows.push(`
+                    <div class="status-item">
+                        <span class="status-dot ${pct < 80 ? 'online' : 'warning'}"></span>
+                        <span title="${this.escapeHtml(gpu.name || 'GPU')}">GPU Memory</span>
+                        <span class="status-value">${usedGb} / ${totalGb} GB</span>
+                    </div>`);
+            } else {
+                rows.push(`
+                    <div class="status-item">
+                        <span class="status-dot warning"></span>
+                        <span>GPU</span>
+                        <span class="status-value">CPU mode</span>
+                    </div>`);
+            }
+
+            // Classifier weight readiness (count of present .onnx / .pt)
+            const cls = s.classifiers || {};
+            const clsCount = Object.values(cls).filter(c => c && (c.onnx || c.pt)).length;
+            rows.push(`
+                <div class="status-item">
+                    <span class="status-dot ${clsCount >= 3 ? 'online' : 'warning'}"></span>
+                    <span>Classifiers Ready</span>
+                    <span class="status-value">${clsCount} / 3</span>
+                </div>`);
+
+            // Segmentation
+            const segs = s.segmentation_models || [];
+            const segCount = segs.filter(m => m.onnx || m.pt_size_mb).length;
+            rows.push(`
+                <div class="status-item">
+                    <span class="status-dot ${segCount > 0 ? 'online' : 'offline'}"></span>
+                    <span>Segmentation</span>
+                    <span class="status-value">${segCount} model${segCount === 1 ? '' : 's'}</span>
+                </div>`);
+
+            // LLM backend availability
+            const llm = s.llm || {};
+            let llmStatus = 'deterministic only';
+            let llmDot = 'warning';
+            if (llm.hf_inference_token_present) { llmStatus = 'HF Inference'; llmDot = 'online'; }
+            else if (llm.anthropic_token_present) { llmStatus = 'Anthropic'; llmDot = 'online'; }
+            rows.push(`
+                <div class="status-item">
+                    <span class="status-dot ${llmDot}"></span>
+                    <span>LLM Explanation</span>
+                    <span class="status-value">${llmStatus}</span>
+                </div>`);
+
+            if (list) list.innerHTML = rows.join('');
+            if (lastUpdated) {
+                const t = new Date();
+                lastUpdated.textContent = `updated ${t.getHours().toString().padStart(2,'0')}:${t.getMinutes().toString().padStart(2,'0')}`;
+            }
+        } catch (err) {
+            if (list) {
+                list.innerHTML = `
+                    <div class="status-item">
+                        <span class="status-dot offline"></span>
+                        <span>Server Unreachable</span>
+                        <span class="status-value">--</span>
+                    </div>`;
+            }
+        }
+    }
+
+    /**
+     * Session-scoped Recent Scans: pushes each finished analysis into the
+     * sidebar list. Survives only as long as the tab is open (no persistence)
+     * to keep the demo simple and avoid the misleading mock that was here.
+     */
+    addRecentScan(entry) {
+        if (!this._recentScans) this._recentScans = [];
+        this._recentScans.unshift(entry);
+        if (this._recentScans.length > 8) this._recentScans.length = 8;
+        this.renderRecentScans();
+    }
+
+    renderRecentScans() {
+        const el = document.getElementById('recentScansList');
+        if (!el) return;
+        const items = this._recentScans || [];
+        if (!items.length) {
+            el.innerHTML = '<div class="recent-empty">No scans yet. Upload an MRI to begin.</div>';
+            return;
+        }
+        el.innerHTML = items.map(s => {
+            const tumor = s.isPositive;
+            const ago = this.formatRelativeTime(s.timestamp);
+            return `
+                <div class="recent-item" data-scan-id="${this.escapeHtml(s.id)}">
+                    <div class="recent-icon ${tumor ? 'tumor' : 'normal'}">${tumor ? 'T' : 'N'}</div>
+                    <div class="recent-info">
+                        <span class="recent-id">${this.escapeHtml(s.id)}</span>
+                        <span class="recent-time">${ago}</span>
+                    </div>
+                    <span class="recent-status ${tumor ? 'positive' : 'negative'}">${tumor ? 'Tumor' : 'Normal'}</span>
+                </div>`;
+        }).join('');
+    }
+
+    formatRelativeTime(ms) {
+        const diff = Date.now() - ms;
+        if (diff < 60_000) return 'just now';
+        if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} min ago`;
+        return `${Math.floor(diff / 3_600_000)} h ago`;
+    }
+
     setupNavigation() {
-        // Handle recent scan clicks
-        document.querySelectorAll('.recent-item').forEach(item => {
-            item.addEventListener('click', () => {
-                // In a real app, this would load the scan results
-                alert('Loading scan results... (Feature coming soon)');
-            });
-        });
+        // Session-tracked Recent Scans bind themselves in addRecentScan().
+        // No mock click handlers needed; the items appear only after real runs.
     }
     
     formatFileSize(bytes) {

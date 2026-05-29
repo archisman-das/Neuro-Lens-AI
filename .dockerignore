@@ -1,0 +1,66 @@
+# Keep the Spaces image small. The Dockerfile copies in only the runtime
+# code + ONNX model siblings; everything below stays out.
+
+# VCS / metadata
+.git
+.github
+.gitattributes
+.gitignore
+
+# Docs / research write-ups
+Documentation/
+README*.md
+PROJECT_DOCUMENTATION.md
+LICENSE
+
+# Training datasets, prep logs, raw downloads
+dataset_real/
+dataset_brats*/
+dataset_lgg/
+data_sources/
+foundation_features_cache/
+*.npz
+*.npy
+*_prep.log
+brats_prep.log
+brats_t1c_prep.log
+retrain_classifiers.log
+
+# PyTorch checkpoints (Spaces ships ONNX only; .pt is for training/Grad-CAM dev)
+*.pt
+**/best_model.pt
+**/last.pt
+**/best_weights.pt
+
+# Training scripts, evaluators, notebooks
+src/train.py
+src/train_segmentation.py
+src/train_segmentation_torch.py
+src/train_segmentation_v2.py
+src/train_segmentation_v4.py
+src/ablation_study.py
+src/advanced_training.py
+src/kfold_validation.py
+src/robustness_analysis.py
+src/split_dataset.py
+src/data.py
+retrain_classifiers.py
+retrain_classifiers_torch.py
+prepare_*.py
+generate_pseudo_masks.py
+create_synthetic_dataset.py
+evaluate_segmentation.py
+experiment_tracking.ipynb
+
+# Test artifacts, local outputs
+tests/
+test_outputs/
+test_dashboard_e2e.py
+e2e_explain_*.json
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.idea/
+.vscode/

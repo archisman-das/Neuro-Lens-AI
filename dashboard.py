@@ -1373,6 +1373,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # we emit our own structured logs in respond_json / handlers.
         return
 
+    def handle_one_request(self):
+        # Swallow client-disconnect noise. BrokenPipeError /
+        # ConnectionResetError happen when the browser cancels the request
+        # (refresh, navigate-away) before we finish writing the response.
+        # The default stdlib handler logs a 20-line traceback for each one,
+        # which is alarming-looking but harmless. We log a single info line
+        # instead.
+        try:
+            return super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            logger.info('client_disconnected req_id=%s err=%s',
+                         getattr(self, '_request_id', '-'),
+                         type(exc).__name__)
+
 
 def _get_status_snapshot() -> dict:
     """Real /status endpoint: what models are actually loaded, real GPU memory,

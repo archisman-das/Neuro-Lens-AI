@@ -6,9 +6,10 @@ class NeuroLensApp {
     constructor() {
         this.currentFile = null;
         this.currentResults = null;
+        this.currentSegmentation = null;
         this.startTime = null;
         this.imageDataUrl = null;
-        
+
         this.init();
     }
     
@@ -65,11 +66,23 @@ class NeuroLensApp {
         thresholdSlider.addEventListener('input', (e) => {
             thresholdValue.textContent = (e.target.value / 100).toFixed(2);
         });
+        thresholdSlider.addEventListener('change', () => {
+            // Re-run segmentation on the cached file with the new threshold.
+            if (this.currentFile) {
+                this.runSegmentation();
+            }
+        });
         
         // Segmentation button
         document.getElementById('runSegmentationBtn').addEventListener('click', () => {
             this.runSegmentation();
         });
+
+        // AI Explanation button
+        const explainBtn = document.getElementById('runExplainBtn');
+        if (explainBtn) {
+            explainBtn.addEventListener('click', () => this.runExplanation());
+        }
         
         // Tab switching
         document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -121,99 +134,184 @@ class NeuroLensApp {
     
     async runAnalysis() {
         if (!this.currentFile) return;
-        
+
         const modelSelect = document.getElementById('modelSelect');
         const patientId = document.getElementById('patientId').value || `SCAN-${Date.now()}`;
-        
-        // Show loading
+
         this.showLoading();
         this.startTime = Date.now();
-        
-        // Simulate API call with progress
+
         const progressFill = document.getElementById('progressFill');
         const progressText = document.getElementById('progressText');
-        
+
         let progress = 0;
         const progressInterval = setInterval(() => {
-            progress += Math.random() * 15;
-            if (progress > 95) progress = 95;
+            progress = Math.min(95, progress + Math.random() * 10 + 3);
             progressFill.style.width = `${progress}%`;
             progressText.textContent = `Processing: ${Math.round(progress)}%`;
-        }, 200);
-        
-        // Simulate analysis delay
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        clearInterval(progressInterval);
-        progressFill.style.width = '100%';
-        progressText.textContent = 'Processing: 100%';
-        
-        // Generate mock results
-        this.currentResults = this.generateMockResults(patientId, modelSelect.value);
-        
-        // Hide loading
-        setTimeout(() => {
+        }, 300);
+
+        try {
+            const selected = modelSelect.value || 'all';
+            const modelsToCall = selected === 'all'
+                ? ['cnn', 'transfer', 'vit']
+                : [selected];
+
+            // Kick everything off in parallel so a single click runs:
+            //   - /metrics (cached per-model accuracy / AUC for the table)
+            //   - one /predict per classifier (CNN / Transfer / ViT)
+            //   - one /segment for the Attention U-Net mask + overlay
+            // The user no longer has to click two buttons on two tabs.
+            const thresholdInput = document.getElementById('thresholdSlider');
+            const threshold = thresholdInput ? (parseInt(thresholdInput.value, 10) / 100) : 0.5;
+
+            const metricsP = this.fetchMetricsByModel();
+            const predictionPromises = modelsToCall.map(m =>
+                this.callPredict(m, this.currentFile)
+                    .then(result => ({ model: m, result, error: null }))
+                    .catch(err => ({ model: m, result: null, error: err.message || String(err) }))
+            );
+            const segModalitySel = document.getElementById('segModelSelect');
+            const segModality = segModalitySel ? segModalitySel.value : '';
+            const segmentationP = this.callSegment(this.currentFile, threshold, segModality)
+                .then(result => ({ result, error: null }))
+                .catch(err => ({ result: null, error: err.message || String(err) }));
+
+            const [metricsByModel, ...rest] = await Promise.all([metricsP, ...predictionPromises, segmentationP]);
+            const segmentation = rest.pop();
+            const predictionResults = rest;
+
+            clearInterval(progressInterval);
+            progressFill.style.width = '100%';
+            progressText.textContent = 'Processing: 100%';
+
+            this.currentResults = this.buildResultsFromBackend(patientId, predictionResults, metricsByModel);
+            this.currentSegmentation = segmentation;
+
+            setTimeout(() => {
+                this.hideLoading();
+                this.displayResults();
+                // Eagerly populate the segmentation tab so the user sees the
+                // mask immediately when they click it (no extra round trip).
+                this.renderSegmentationFromCache();
+            }, 300);
+        } catch (err) {
+            clearInterval(progressInterval);
             this.hideLoading();
-            this.displayResults();
-        }, 500);
+            alert('Prediction failed: ' + (err.message || err));
+            console.error(err);
+        }
     }
-    
-    generateMockResults(patientId, modelType) {
-        // ViT should always be the best model with highest confidence
-        const modelResults = [
-            {
-                model: 'cnn',
-                modelLabel: 'CNN (Fast)',
-                prediction: 'Tumor',
-                confidence: 0.78 + Math.random() * 0.08,
-                accuracy: 0.85 + Math.random() * 0.05,
-                isPositive: true,
-                status: 'positive',
-                auc: 0.87 + Math.random() * 0.05
-            },
-            {
-                model: 'transfer',
-                modelLabel: 'Transfer Learning',
-                prediction: 'Tumor',
-                confidence: 0.85 + Math.random() * 0.06,
-                accuracy: 0.89 + Math.random() * 0.04,
-                isPositive: true,
-                status: 'positive',
-                auc: 0.91 + Math.random() * 0.04
-            },
-            {
-                model: 'vit',
-                modelLabel: 'Vision Transformer',
-                prediction: 'Tumor',
-                confidence: 0.94 + Math.random() * 0.05, // Highest confidence
-                accuracy: 0.95 + Math.random() * 0.03, // Highest accuracy
-                isPositive: true,
-                status: 'positive',
-                auc: 0.96 + Math.random() * 0.03 // Highest AUC
-            }
-        ];
-        
-        // Find best model (should be ViT)
-        const bestModel = modelResults.reduce((best, current) => 
-            current.confidence > best.confidence ? current : best
-        );
-        
+
+    async callSegment(file, threshold = 0.5, modality = '') {
+        const form = new FormData();
+        form.append('image', file, file.name || 'upload.png');
+        form.append('threshold', String(threshold));
+        if (modality) form.append('modality', modality);
+        const resp = await fetch('/segment', { method: 'POST', body: form });
+        if (!resp.ok) {
+            throw new Error(`/segment returned ${resp.status}`);
+        }
+        const payload = await resp.json();
+        if (!payload || payload.success === false) {
+            throw new Error((payload && payload.error) || '/segment failed');
+        }
+        return payload;
+    }
+
+    async callPredict(modelName, file) {
+        const form = new FormData();
+        form.append('model', modelName);
+        form.append('image', file, file.name || 'upload.png');
+        const resp = await fetch('/predict', { method: 'POST', body: form });
+        if (!resp.ok) {
+            throw new Error(`/predict ${modelName} returned ${resp.status}`);
+        }
+        const payload = await resp.json();
+        if (!payload || payload.success === false) {
+            throw new Error((payload && payload.error) || `/predict ${modelName} failed`);
+        }
+        return payload.result;
+    }
+
+    async fetchMetricsByModel() {
+        try {
+            const resp = await fetch('/metrics');
+            if (!resp.ok) return {};
+            return await resp.json();
+        } catch (_) {
+            return {};
+        }
+    }
+
+    buildResultsFromBackend(patientId, predictionResults, metricsByModel) {
+        const labelMap = {
+            cnn: 'CNN (Fast)',
+            transfer: 'Transfer Learning',
+            vit: 'Vision Transformer',
+        };
+
+        const modelResults = predictionResults
+            .filter(pr => pr.result)
+            .map(pr => {
+                const r = pr.result;
+                const accuracy = metricsByModel?.[pr.model]?.metrics?.accuracy ?? null;
+                const auc = metricsByModel?.[pr.model]?.metrics?.roc_auc ?? null;
+                return {
+                    model: pr.model,
+                    modelLabel: labelMap[pr.model] || pr.model,
+                    prediction: r.display_label || (r.label === 'tumor' ? 'Tumor' : 'No Tumor'),
+                    confidence: r.confidence,
+                    accuracy: accuracy,
+                    auc: auc,
+                    isPositive: r.label === 'tumor',
+                    status: r.label === 'tumor' ? 'positive' : 'negative',
+                    gradcam: r.gradcam || null,
+                    image: r.image || null,
+                    probability: r.probability,
+                    weights: r.weights || null,
+                };
+            });
+
+        // Errors get rendered as failed rows so the user can see what blew up.
+        for (const pr of predictionResults.filter(pr => !pr.result)) {
+            modelResults.push({
+                model: pr.model,
+                modelLabel: labelMap[pr.model] || pr.model,
+                prediction: 'Error',
+                confidence: 0,
+                accuracy: null,
+                auc: null,
+                isPositive: false,
+                status: 'negative',
+                error: pr.error,
+            });
+        }
+
+        // Best model = highest confidence among real (non-error) results.
+        const realResults = modelResults.filter(r => !r.error);
+        const bestModel = realResults.length
+            ? realResults.reduce((best, cur) => (cur.confidence > best.confidence ? cur : best))
+            : modelResults[0];
+
+        const positiveVotes = realResults.filter(r => r.isPositive).length;
+        const isPositive = positiveVotes >= Math.ceil(realResults.length / 2);
         const processingTime = ((Date.now() - this.startTime) / 1000).toFixed(1);
-        
+
         return {
-            patientId: patientId,
+            patientId,
             timestamp: new Date().toLocaleString(),
             models: modelResults,
-            bestModel: bestModel,
-            diagnosis: 'Tumor Detected',
-            isPositive: true,
-            confidence: bestModel.confidence,
-            processingTime: processingTime,
-            uncertainty: {
-                epistemic: 0.05 + Math.random() * 0.1,
-                aleatoric: 0.03 + Math.random() * 0.08
-            },
-            robustness: 0.85 + Math.random() * 0.1
+            bestModel,
+            diagnosis: isPositive ? 'Tumor Detected' : 'No Tumor Detected',
+            isPositive,
+            confidence: bestModel ? bestModel.confidence : 0,
+            processingTime,
+            // Real uncertainty/robustness numbers are not computed by the
+            // backend yet — the previous values were random JS placeholders.
+            // We surface "N/A" rather than fabricate numbers.
+            uncertainty: { epistemic: null, aleatoric: null },
+            robustness: null,
         };
     }
     
@@ -239,15 +337,17 @@ class NeuroLensApp {
         document.getElementById('timeValue').textContent = 
             `${results.processingTime}s`;
         
-        // Update comparison table with ROC AUC column
+        // Update comparison table with real metrics from /metrics. Accuracy and
+        // AUC come from the persisted JSONs, not from the live prediction.
+        const fmtPct = (v) => (v == null || Number.isNaN(v)) ? 'N/A' : `${(v * 100).toFixed(1)}%`;
         const tableBody = document.getElementById('comparisonTableBody');
         tableBody.innerHTML = results.models.map(model => `
             <tr class="${model === results.bestModel ? 'best' : ''}">
                 <td><strong>${model.modelLabel}</strong></td>
                 <td>${model.prediction}</td>
-                <td>${(model.confidence * 100).toFixed(1)}%</td>
-                <td>${(model.accuracy * 100).toFixed(1)}%</td>
-                <td>${(model.auc * 100).toFixed(1)}%</td>
+                <td>${fmtPct(model.confidence)}</td>
+                <td>${fmtPct(model.accuracy)}</td>
+                <td>${fmtPct(model.auc)}</td>
                 <td>
                     <span class="status-badge ${model.status}">
                         ● ${model.status === 'positive' ? 'Positive' : 'Negative'}
@@ -256,192 +356,458 @@ class NeuroLensApp {
             </tr>
         `).join('');
         
-        // Update uncertainty
-        document.getElementById('epistemicValue').textContent = 
-            results.uncertainty.epistemic.toFixed(3);
-        document.getElementById('aleatoricValue').textContent = 
-            results.uncertainty.aleatoric.toFixed(3);
-        
-        const totalUncertainty = (results.uncertainty.epistemic + results.uncertainty.aleatoric) / 2;
-        document.getElementById('uncertaintyFill').style.width = 
-            `${totalUncertainty * 100}%`;
-        document.getElementById('uncertaintyNote').textContent = 
-            totalUncertainty < 0.1 ? 'Low uncertainty - High reliability' : 
-            totalUncertainty < 0.2 ? 'Moderate uncertainty - Review recommended' : 
-            'High uncertainty - Clinical review required';
-        
-        // Update robustness gauge
-        const robustnessPercent = results.robustness * 100;
-        document.getElementById('robustnessValue').textContent = 
-            `${robustnessPercent.toFixed(0)}%`;
-        document.getElementById('robustnessGauge').style.background = 
-            `conic-gradient(var(--success) 0deg, var(--success) ${robustnessPercent * 3.6}deg, var(--gray-200) ${robustnessPercent * 3.6}deg)`;
-        document.getElementById('robustnessNote').textContent = 
-            robustnessPercent > 80 ? 'Excellent robustness' : 
-            robustnessPercent > 60 ? 'Good robustness' : 
-            'Moderate robustness - Consider retraining';
-        
-        // Set visualization images
+        // Uncertainty / robustness numbers used to be JS placeholders. Until
+        // a real estimator is wired up server-side we render N/A so the UI
+        // does not lie about reliability.
+        const epEl = document.getElementById('epistemicValue');
+        const alEl = document.getElementById('aleatoricValue');
+        epEl.textContent = results.uncertainty.epistemic == null ? 'N/A' : results.uncertainty.epistemic.toFixed(3);
+        alEl.textContent = results.uncertainty.aleatoric == null ? 'N/A' : results.uncertainty.aleatoric.toFixed(3);
+        const uncertaintyAvailable = results.uncertainty.epistemic != null && results.uncertainty.aleatoric != null;
+        const totalUncertainty = uncertaintyAvailable
+            ? (results.uncertainty.epistemic + results.uncertainty.aleatoric) / 2
+            : 0;
+        document.getElementById('uncertaintyFill').style.width = `${(uncertaintyAvailable ? totalUncertainty : 0) * 100}%`;
+        document.getElementById('uncertaintyNote').textContent = uncertaintyAvailable
+            ? (totalUncertainty < 0.1 ? 'Low uncertainty - High reliability'
+                : totalUncertainty < 0.2 ? 'Moderate uncertainty - Review recommended'
+                : 'High uncertainty - Clinical review required')
+            : 'Uncertainty estimator not yet wired into the backend.';
+
+        const robustnessPercent = results.robustness == null ? null : results.robustness * 100;
+        document.getElementById('robustnessValue').textContent = robustnessPercent == null
+            ? 'N/A'
+            : `${robustnessPercent.toFixed(0)}%`;
+        document.getElementById('robustnessGauge').style.background = robustnessPercent == null
+            ? 'conic-gradient(var(--gray-200) 0deg, var(--gray-200) 360deg)'
+            : `conic-gradient(var(--success) 0deg, var(--success) ${robustnessPercent * 3.6}deg, var(--gray-200) ${robustnessPercent * 3.6}deg)`;
+        document.getElementById('robustnessNote').textContent = robustnessPercent == null
+            ? 'Robustness analysis not yet wired into the backend.'
+            : (robustnessPercent > 80 ? 'Excellent robustness'
+                : robustnessPercent > 60 ? 'Good robustness'
+                : 'Moderate robustness - Consider retraining');
+
+        // Visualizations: the "Original" tab shows the uploaded image, the
+        // Grad-CAM tabs show whatever the backend returned for the best model,
+        // and the U-Net Mask / Overlay tabs show the segmentation result.
         if (this.imageDataUrl) {
             document.getElementById('vizImage').src = this.imageDataUrl;
-            // Create heatmap effect using canvas
-            this.createHeatmapEffect(this.imageDataUrl);
-            // Create overlay effect
-            this.createOverlayEffect(this.imageDataUrl);
+        }
+        this.setHeatmapFromBackend(results.bestModel);
+        const seg = this.currentSegmentation;
+        const maskImg = document.getElementById('maskImage');
+        const segoverlayImg = document.getElementById('segoverlayImage');
+        if (seg && seg.result && maskImg && segoverlayImg) {
+            if (seg.result.mask) maskImg.src = seg.result.mask;
+            if (seg.result.overlay) segoverlayImg.src = seg.result.overlay;
+        } else if (maskImg && segoverlayImg) {
+            maskImg.src = '';
+            segoverlayImg.src = '';
         }
         
         // Show results section
         this.showSection('results');
     }
     
-    createHeatmapEffect(imageUrl) {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        const img = new Image();
-        img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-            
-            // Get image data
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const data = imageData.data;
-            
-            // Apply heatmap color mapping
-            for (let i = 0; i < data.length; i += 4) {
-                const gray = (data[i] + data[i + 1] + data[i + 2]) / 3;
-                const intensity = gray / 255;
-                
-                // Heatmap colors: blue -> green -> yellow -> red
-                if (intensity < 0.25) {
-                    data[i] = 0;
-                    data[i + 1] = 0;
-                    data[i + 2] = intensity * 4 * 255;
-                } else if (intensity < 0.5) {
-                    data[i] = 0;
-                    data[i + 1] = (intensity - 0.25) * 4 * 255;
-                    data[i + 2] = (0.5 - intensity) * 4 * 255;
-                } else if (intensity < 0.75) {
-                    data[i] = (intensity - 0.5) * 4 * 255;
-                    data[i + 1] = 255;
-                    data[i + 2] = 0;
-                } else {
-                    data[i] = 255;
-                    data[i + 1] = 255 - (intensity - 0.75) * 4 * 255;
-                    data[i + 2] = 0;
-                }
-            }
-            
-            ctx.putImageData(imageData, 0, 0);
-            
-            // Add semi-transparent overlay
-            ctx.fillStyle = 'rgba(255, 0, 0, 0.15)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            document.getElementById('heatmapImage').src = canvas.toDataURL();
-        };
-        img.src = imageUrl;
-    }
-    
-    createOverlayEffect(imageUrl) {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        const img = new Image();
-        img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-            
-            // Draw tumor region overlay (simulated)
-            const centerX = canvas.width * 0.5;
-            const centerY = canvas.height * 0.4;
-            const radiusX = canvas.width * 0.15;
-            const radiusY = canvas.height * 0.12;
-            
-            // Draw semi-transparent red overlay for tumor region
-            ctx.beginPath();
-            ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
-            ctx.lineWidth = 3;
-            ctx.stroke();
-            
-            // Add label
-            ctx.fillStyle = 'white';
-            ctx.font = 'bold 16px Arial';
-            ctx.textAlign = 'center';
-            ctx.fillText('TUMOR', centerX, centerY - radiusY - 10);
-            
-            document.getElementById('overlayImage').src = canvas.toDataURL();
-        };
-        img.src = imageUrl;
-    }
-    
-    runSegmentation() {
+    setHeatmapFromBackend(bestModel) {
+        // Real Grad-CAM data:url returned by /predict for cnn/transfer. For
+        // ViT the backend returns null because the hybrid model has no single
+        // canonical 'final conv' layer suitable for Grad-CAM. In that case we
+        // fall back to displaying the input image with a small note.
+        const heatmapImg = document.getElementById('heatmapImage');
+        const overlayImg = document.getElementById('overlayImage');
+        if (bestModel && bestModel.gradcam) {
+            heatmapImg.src = bestModel.gradcam;
+            overlayImg.src = bestModel.gradcam;
+            return;
+        }
         if (this.imageDataUrl) {
-            // Display the original image in segmentation viewers
-            document.getElementById('segOriginal').innerHTML = `<img src="${this.imageDataUrl}" style="width:100%;height:100%;object-fit:contain;border-radius:12px;">`;
-            
-            // Create segmentation mask
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            const img = new Image();
-            img.onload = () => {
-                canvas.width = img.width;
-                canvas.height = img.height;
-                ctx.fillStyle = 'black';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                
-                // Draw tumor region in green
-                const centerX = canvas.width * 0.5;
-                const centerY = canvas.height * 0.4;
-                const radiusX = canvas.width * 0.15;
-                const radiusY = canvas.height * 0.12;
-                
-                ctx.beginPath();
-                ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(16, 185, 129, 0.8)';
-                ctx.fill();
-                
-                document.getElementById('segMask').innerHTML = `<img src="${canvas.toDataURL()}" style="width:100%;height:100%;object-fit:contain;border-radius:12px;">`;
-            };
-            img.src = this.imageDataUrl;
-            
-            // Create overlay
-            const overlayCanvas = document.createElement('canvas');
-            const overlayCtx = overlayCanvas.getContext('2d');
-            const overlayImg = new Image();
-            overlayImg.onload = () => {
-                overlayCanvas.width = overlayImg.width;
-                overlayCanvas.height = overlayImg.height;
-                overlayCtx.drawImage(overlayImg, 0, 0);
-                
-                // Draw tumor overlay
-                const centerX = overlayCanvas.width * 0.5;
-                const centerY = overlayCanvas.height * 0.4;
-                const radiusX = overlayCanvas.width * 0.15;
-                const radiusY = overlayCanvas.height * 0.12;
-                
-                overlayCtx.beginPath();
-                overlayCtx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, Math.PI * 2);
-                overlayCtx.fillStyle = 'rgba(16, 185, 129, 0.4)';
-                overlayCtx.fill();
-                overlayCtx.strokeStyle = 'rgba(16, 185, 129, 0.9)';
-                overlayCtx.lineWidth = 3;
-                overlayCtx.stroke();
-                
-                document.getElementById('segOverlay').innerHTML = `<img src="${overlayCanvas.toDataURL()}" style="width:100%;height:100%;object-fit:contain;border-radius:12px;">`;
-            };
+            heatmapImg.src = this.imageDataUrl;
             overlayImg.src = this.imageDataUrl;
         }
-        
-        // Generate metrics
-        document.getElementById('diceScore').textContent = (0.88 + Math.random() * 0.08).toFixed(3);
-        document.getElementById('iouScore').textContent = (0.82 + Math.random() * 0.1).toFixed(3);
-        document.getElementById('tumorArea').textContent = Math.floor(200 + Math.random() * 400) + ' mm²';
+    }
+
+    async runSegmentation() {
+        if (!this.currentFile) {
+            alert('Upload an MRI image first.');
+            return;
+        }
+        const thresholdInput = document.getElementById('thresholdSlider');
+        const thresholdValue = thresholdInput ? (parseInt(thresholdInput.value, 10) / 100) : 0.5;
+
+        this.setSegmentationPanelLoading();
+        try {
+            const segModalitySel = document.getElementById('segModelSelect');
+            const segModality = segModalitySel ? segModalitySel.value : '';
+            const payload = await this.callSegment(this.currentFile, thresholdValue, segModality);
+            this.currentSegmentation = { result: payload, error: null };
+            this.renderSegmentationFromCache();
+        } catch (err) {
+            this.currentSegmentation = { result: null, error: err.message || String(err) };
+            this.renderSegmentationFromCache();
+            console.error(err);
+        }
+    }
+
+    setSegmentationPanelLoading() {
+        const segOriginal = document.getElementById('segOriginal');
+        const segMask = document.getElementById('segMask');
+        const segOverlay = document.getElementById('segOverlay');
+        if (segOriginal && this.imageDataUrl) {
+            segOriginal.innerHTML = `<img src="${this.imageDataUrl}" style="width:100%;height:100%;object-fit:contain;border-radius:12px;">`;
+        }
+        if (segMask) segMask.innerHTML = '<span style="opacity:0.6;">Running U-Net...</span>';
+        if (segOverlay) segOverlay.innerHTML = '<span style="opacity:0.6;">Running U-Net...</span>';
+        const dice = document.getElementById('diceScore');
+        const iou = document.getElementById('iouScore');
+        const area = document.getElementById('tumorArea');
+        if (dice) dice.textContent = '...';
+        if (iou) iou.textContent = '...';
+        if (area) area.textContent = '...';
+    }
+
+    renderSegmentationFromCache() {
+        const segOriginal = document.getElementById('segOriginal');
+        const segMask = document.getElementById('segMask');
+        const segOverlay = document.getElementById('segOverlay');
+        const dice = document.getElementById('diceScore');
+        const iou = document.getElementById('iouScore');
+        const area = document.getElementById('tumorArea');
+        if (!segMask) return;
+
+        if (segOriginal && this.imageDataUrl) {
+            segOriginal.innerHTML = `<img src="${this.imageDataUrl}" style="width:100%;height:100%;object-fit:contain;border-radius:12px;">`;
+        }
+        if (!this.currentSegmentation) {
+            segMask.innerHTML = '<span style="opacity:0.6;">Upload an image and click "Run Analysis" to see the U-Net mask.</span>';
+            segOverlay.innerHTML = '';
+            return;
+        }
+        const seg = this.currentSegmentation;
+        if (seg.error) {
+            segMask.innerHTML = `<span style="color:#ef4444;">Error: ${seg.error}</span>`;
+            segOverlay.innerHTML = '';
+            if (dice) dice.textContent = '--';
+            if (iou) iou.textContent = '--';
+            if (area) area.textContent = '--';
+            return;
+        }
+        const payload = seg.result || {};
+        if (payload.mask) {
+            segMask.innerHTML = `<img src="${payload.mask}" style="width:100%;height:100%;object-fit:contain;border-radius:12px;background:black;">`;
+        }
+        if (payload.overlay) {
+            segOverlay.innerHTML = `<img src="${payload.overlay}" style="width:100%;height:100%;object-fit:contain;border-radius:12px;">`;
+        }
+        if (dice) dice.textContent = (payload.dice == null) ? 'N/A' : Number(payload.dice).toFixed(3);
+        if (iou) iou.textContent = (payload.iou == null) ? 'N/A' : Number(payload.iou).toFixed(3);
+        if (area) area.textContent = (payload.tumor_area_px == null) ? 'N/A' : `${payload.tumor_area_px} px`;
+
+        // Cascade info: which checkpoint actually fired + why.
+        const usedEl = document.getElementById('segUsedModel');
+        const reasonEl = document.getElementById('segCascadeReason');
+        const cascade = payload.cascade;
+        if (usedEl) {
+            const used = (cascade && cascade.used) || payload.source_dir || '--';
+            // Make the label shorter and friendlier.
+            const friendly = {
+                'attention_unet_v3': 'v3 (multi-modal)',
+                'attention_unet_v2': 'v2',
+                'attention_unet_t1c': 'T1c specialist',
+                'attention_unet_lgg': 'LGG',
+                'attention_unet': 'baseline',
+            };
+            usedEl.textContent = friendly[used] || used;
+        }
+        if (reasonEl) {
+            if (cascade && cascade.reason) {
+                const reasonLabel = {
+                    'v3_sufficient': 'v3 found enough tumor; no cascade',
+                    'specialist_unavailable': 'T1c specialist checkpoint missing',
+                    'explicit_modality_request': 'user picked this model',
+                }[cascade.reason] || cascade.reason;
+                reasonEl.textContent = reasonLabel;
+            } else {
+                reasonEl.textContent = '';
+            }
+        }
     }
     
+    async callExplain(file, threshold, modality, backend) {
+        const form = new FormData();
+        form.append('image', file, file.name || 'upload.png');
+        form.append('threshold', String(threshold));
+        if (modality) form.append('modality', modality);
+        if (backend) form.append('backend', backend);
+        const resp = await fetch('/explain', { method: 'POST', body: form });
+        if (!resp.ok) {
+            throw new Error(`/explain returned ${resp.status}`);
+        }
+        const payload = await resp.json();
+        if (!payload || payload.success === false) {
+            throw new Error((payload && payload.error) || '/explain failed');
+        }
+        return payload;
+    }
+
+    async runExplanation() {
+        if (!this.currentFile) {
+            alert('Upload an MRI image first.');
+            return;
+        }
+        const panel = document.getElementById('explainPanel');
+        if (panel) panel.style.display = 'block';
+        this.setExplanationLoading();
+
+        const thresholdInput = document.getElementById('thresholdSlider');
+        const threshold = thresholdInput ? (parseInt(thresholdInput.value, 10) / 100) : 0.5;
+        const segModalitySel = document.getElementById('segModelSelect');
+        const segModality = segModalitySel ? segModalitySel.value : '';
+        const backendSel = document.getElementById('explainBackendSelect');
+        const backend = backendSel ? backendSel.value : '';
+
+        try {
+            const payload = await this.callExplain(this.currentFile, threshold, segModality, backend);
+            // Also update the segmentation viewers since /explain reran segmentation.
+            if (payload.segmentation) {
+                this.currentSegmentation = { result: payload.segmentation, error: null };
+                this.renderSegmentationFromCache();
+            }
+            this.renderExplanation(payload);
+        } catch (err) {
+            console.error(err);
+            this.renderExplanationError(err.message || String(err));
+        }
+    }
+
+    setExplanationLoading() {
+        const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+        set('explainBackend', 'running...');
+        set('explainSafetyBadge', '');
+        set('explainImpression', 'Calling LLM and extracting deterministic tumor features...');
+        set('explainSummary', '...');
+        set('explainAgreement', '...');
+        set('explainConfidence', '...');
+        set('explainConfBand', '--');
+        set('explainConfScore', '--');
+        set('explainGradeEvidence', '...');
+        set('explainRecommendation', '...');
+        set('explainDisclaimer', 'Not a medical diagnosis. Research / educational only.');
+        const ids = ['explainFindings', 'explainDifferentialList', 'explainVisualObservations',
+                     'explainVisualDisagreements', 'explainLlmPasses', 'explainQualityWarnings',
+                     'explainRaw'];
+        ids.forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ''; });
+        const fill = document.getElementById('explainConfFill');
+        if (fill) fill.style.width = '0%';
+    }
+
+    renderExplanationError(message) {
+        const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+        set('explainBackend', 'error');
+        set('explainImpression', `Error: ${message}`);
+        set('explainSummary', '--');
+        set('explainAgreement', '--');
+        set('explainConfidence', '--');
+    }
+
+    renderExplanation(payload) {
+        const exp = (payload && payload.explanation) || {};
+        const feats = (payload && payload.features) || {};
+        const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text || '--'; };
+
+        // --- Header (backend + safety badge) -------------------------------
+        set('explainBackend', `${exp.backend || 'none'}${exp.model ? ` · ${exp.model}` : ''}`);
+        const safety = exp.hallucination_safety || '';
+        const safetyEl = document.getElementById('explainSafetyBadge');
+        if (safetyEl) {
+            const isZero = safety.toLowerCase().includes('guaranteed_zero');
+            safetyEl.textContent = isZero ? 'Zero-Hallucination Mode' : 'Hallucination-Checked';
+            safetyEl.title = safety;
+            safetyEl.className = 'explain-safety-badge ' + (isZero ? 'safety-zero' : 'safety-checked');
+        }
+
+        // --- Impression + verified Summary --------------------------------
+        set('explainImpression', exp.impression || exp.summary);
+        set('explainSummary', exp.summary);
+        set('explainDisclaimer', exp.disclaimer || 'Not a medical diagnosis. Research / educational only.');
+        set('explainAgreement', exp.model_agreement_analysis);
+        set('explainConfidence', exp.confidence_assessment);
+        set('explainRecommendation', exp.recommendation);
+
+        // --- Confidence band + score --------------------------------------
+        const overall = feats.overall_confidence || {};
+        const score = typeof overall.score_0_to_1 === 'number' ? overall.score_0_to_1 : null;
+        const band = overall.band || '';
+        const bandEl = document.getElementById('explainConfBand');
+        if (bandEl) {
+            bandEl.textContent = band || '--';
+            bandEl.className = 'confidence-band conf-' + (band || 'unknown').replace(/[^a-z-]/gi, '');
+        }
+        const scoreEl = document.getElementById('explainConfScore');
+        if (scoreEl) scoreEl.textContent = (score == null) ? '--' : `${(score * 100).toFixed(0)}%`;
+        const fill = document.getElementById('explainConfFill');
+        if (fill) fill.style.width = `${(score == null) ? 0 : score * 100}%`;
+
+        // --- Structured findings (8 domains) ------------------------------
+        const findings = document.getElementById('explainFindings');
+        if (findings) {
+            const fmap = exp.findings || {};
+            const order = [
+                ['geometry', 'Geometry'],
+                ['localization', 'Localization'],
+                ['intensity', 'Intensity'],
+                ['texture', 'Texture'],
+                ['multimodal', 'Multimodal'],
+                ['morphology_margins', 'Morphology & Margins'],
+                ['internal_architecture', 'Internal Architecture'],
+                ['mass_effect', 'Mass Effect'],
+            ];
+            findings.innerHTML = order
+                .filter(([k]) => fmap[k])
+                .map(([k, label]) => `<dt>${label}</dt><dd>${this.escapeHtml(fmap[k])}</dd>`)
+                .join('');
+            if (!findings.innerHTML) {
+                findings.innerHTML = '<dd style="opacity:0.6;">No structured findings returned.</dd>';
+            }
+        }
+
+        // --- Grade evidence narrative -------------------------------------
+        const gradeEl = document.getElementById('explainGradeEvidence');
+        if (gradeEl) gradeEl.textContent = exp.grade_evidence_narrative || '--';
+
+        // --- Differential with citations & origin tags --------------------
+        const diff = document.getElementById('explainDifferentialList');
+        if (diff) {
+            const items = exp.differential_with_citations || [];
+            if (items.length === 0) {
+                diff.innerHTML = '<div style="opacity:0.6;">No differential hints returned.</div>';
+            } else {
+                diff.innerHTML = items.map(d => {
+                    const origin = d.origin || 'rule-based';
+                    const originLabel = origin === 'llm-citation-checked'
+                        ? '<span class="origin-tag tag-llm">LLM · citation-checked</span>'
+                        : '<span class="origin-tag tag-rule">Rule-based</span>';
+                    const confTag = d.confidence
+                        ? `<span class="conf-tag conf-${d.confidence.replace(/[^a-z-]/gi, '')}">${this.escapeHtml(d.confidence)}</span>`
+                        : '';
+                    const cites = (d.supported_by || []).map(c =>
+                        `<code class="citation-chip">${this.escapeHtml(String(c))}</code>`
+                    ).join(' ');
+                    return `
+                        <div class="differential-item">
+                            <div class="differential-tags">${originLabel}${confTag}</div>
+                            <div class="differential-statement">${this.escapeHtml(d.statement || '')}</div>
+                            <div class="differential-citations">Supported by: ${cites || '<em>(no citations)</em>'}</div>
+                        </div>`;
+                }).join('');
+            }
+        }
+
+        // --- Pattern C: visual observations -------------------------------
+        const visualSection = document.getElementById('explainVisualSection');
+        const visualList = document.getElementById('explainVisualObservations');
+        const obs = exp.visual_observations || [];
+        if (visualSection && visualList) {
+            if (obs.length) {
+                visualSection.style.display = '';
+                visualList.innerHTML = obs.map(o => {
+                    const region = this.escapeHtml(o.region || '?');
+                    const claim = this.escapeHtml(o.claimed_property || '');
+                    const text = this.escapeHtml(o.observation || '');
+                    return `<li><strong>${region}</strong> — ${text} <span class="claim-prop">[${claim}]</span></li>`;
+                }).join('');
+            } else {
+                visualSection.style.display = 'none';
+            }
+        }
+        // Disagreements
+        const disagreeSection = document.getElementById('explainDisagreementsSection');
+        const disagreeList = document.getElementById('explainVisualDisagreements');
+        const dis = exp.visual_disagreements || [];
+        if (disagreeSection && disagreeList) {
+            if (dis.length) {
+                disagreeSection.style.display = '';
+                disagreeList.innerHTML = dis.map(d => {
+                    const text = this.escapeHtml(d.observation || '');
+                    const conflicts = (d.conflicts_with || []).map(c => this.escapeHtml(c)).join('; ');
+                    return `<li><strong>${text}</strong> <span class="claim-prop">conflicts with: ${conflicts}</span></li>`;
+                }).join('');
+            } else {
+                disagreeSection.style.display = 'none';
+            }
+        }
+
+        // --- LLM pass status (transparency) -------------------------------
+        const passesEl = document.getElementById('explainLlmPasses');
+        if (passesEl) {
+            const passes = exp.llm_passes || {};
+            const labels = {
+                polish: 'Polish (Pattern A)',
+                differential_expansion: 'Differential Expansion (Pattern B)',
+                visual_observer: 'Visual Observer (Pattern C)',
+            };
+            const items = ['polish', 'differential_expansion', 'visual_observer']
+                .filter(k => passes[k])
+                .map(k => {
+                    const p = passes[k];
+                    const status = p.status || 'unknown';
+                    const cssStatus = status.replace(/[^a-z_]/gi, '');
+                    const model = p.model ? ` <span class="pass-model">${this.escapeHtml(p.model)}</span>` : '';
+                    let detail = '';
+                    if (status === 'error' || status === 'skipped_insufficient_ram') {
+                        detail = `<div class="pass-detail pass-error">${this.escapeHtml(p.error || p.recovery_hint || '')}</div>`;
+                    } else if (status === 'rejected') {
+                        detail = `<div class="pass-detail pass-warn">Rejected: ${this.escapeHtml((p.warnings || []).join('; '))}</div>`;
+                    } else if (status === 'ok' && k === 'differential_expansion') {
+                        detail = `<div class="pass-detail">Accepted ${p.accepted_count || 0} · Rejected ${p.rejected_count || 0}</div>`;
+                    } else if (status === 'ok' && k === 'visual_observer') {
+                        detail = `<div class="pass-detail">${p.observation_count || 0} observations · ${p.disagreement_count || 0} disagreements</div>`;
+                    } else if (status === 'skipped') {
+                        detail = `<div class="pass-detail">${this.escapeHtml(p.reason || 'skipped')}</div>`;
+                    }
+                    return `
+                        <div class="llm-pass-item pass-${cssStatus}">
+                            <div class="pass-header">
+                                <span class="pass-label">${labels[k]}</span>${model}
+                            </div>
+                            <div class="pass-status">${this.escapeHtml(status)}</div>
+                            ${detail}
+                        </div>`;
+                }).join('');
+            passesEl.innerHTML = items || '<div style="opacity:0.6;">No LLM passes run.</div>';
+        }
+
+        // --- Quality warnings ---------------------------------------------
+        const qualSection = document.getElementById('explainQualitySection');
+        const qualList = document.getElementById('explainQualityWarnings');
+        const warnings = exp.quality_warnings || [];
+        if (qualSection && qualList) {
+            if (warnings.length) {
+                qualSection.style.display = '';
+                qualList.innerHTML = warnings.map(w => `<li>${this.escapeHtml(w)}</li>`).join('');
+            } else {
+                qualSection.style.display = 'none';
+            }
+        }
+
+        // --- Raw features (collapsible) -----------------------------------
+        const raw = document.getElementById('explainRaw');
+        if (raw) {
+            try { raw.textContent = JSON.stringify(feats, null, 2); }
+            catch (_) { raw.textContent = String(feats); }
+        }
+    }
+
+    escapeHtml(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     handleTabClick(e) {
         const btn = e.target;
         const tabGroup = btn.parentElement;
@@ -453,10 +819,21 @@ class NeuroLensApp {
         
         // Handle view switching
         if (btn.dataset.view) {
-            ['vizImage', 'heatmapImage', 'overlayImage'].forEach(id => {
-                document.getElementById(id).style.display = 'none';
+            ['vizImage', 'heatmapImage', 'overlayImage', 'maskImage', 'segoverlayImage'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
             });
-            document.getElementById(`${tabType}Image`).style.display = 'block';
+            // Map data-view names to img element ids.
+            const idMap = {
+                original: 'vizImage',
+                heatmap: 'heatmapImage',
+                overlay: 'overlayImage',
+                mask: 'maskImage',
+                segoverlay: 'segoverlayImage',
+            };
+            const targetId = idMap[tabType] || `${tabType}Image`;
+            const target = document.getElementById(targetId);
+            if (target) target.style.display = 'block';
         }
         
         // Handle comparison/details tab
@@ -484,20 +861,23 @@ class NeuroLensApp {
                             </tr>
                         </thead>
                         <tbody>
-                            ${this.currentResults.models.map(model => `
+                            ${this.currentResults.models.map(model => {
+                                const fmt = (v) => (v == null || Number.isNaN(v)) ? 'N/A' : `${(v * 100).toFixed(1)}%`;
+                                return `
                                 <tr class="${model === this.currentResults.bestModel ? 'best' : ''}">
                                     <td><strong>${model.modelLabel}</strong></td>
                                     <td>${model.prediction}</td>
-                                    <td>${(model.confidence * 100).toFixed(1)}%</td>
-                                    <td>${(model.accuracy * 100).toFixed(1)}%</td>
-                                    <td>${(model.auc * 100).toFixed(1)}%</td>
+                                    <td>${fmt(model.confidence)}</td>
+                                    <td>${fmt(model.accuracy)}</td>
+                                    <td>${fmt(model.auc)}</td>
                                     <td>
                                         <span class="status-badge ${model.status}">
                                             ● ${model.status === 'positive' ? 'Positive' : 'Negative'}
                                         </span>
                                     </td>
                                 </tr>
-                            `).join('')}
+                                `;
+                            }).join('')}
                         </tbody>
                     </table>
                 </div>
@@ -510,21 +890,23 @@ class NeuroLensApp {
         if (this.currentResults) {
             content.innerHTML = `
                 <div style="display: grid; gap: 20px;">
-                    ${this.currentResults.models.map(model => `
+                    ${this.currentResults.models.map(model => {
+                        const fmt = (v) => (v == null || Number.isNaN(v)) ? 'N/A' : `${(v * 100).toFixed(1)}%`;
+                        return `
                         <div style="background: var(--gray-50); padding: 20px; border-radius: var(--radius-lg); border-left: 4px solid ${model === this.currentResults.bestModel ? 'var(--primary)' : 'var(--gray-300)'};">
                             <h4 style="margin-bottom: 12px; color: var(--gray-800);">${model.modelLabel}</h4>
                             <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
                                 <div>
                                     <div style="font-size: 12px; color: var(--gray-500); margin-bottom: 4px;">Confidence</div>
-                                    <div style="font-size: 20px; font-weight: 700; color: var(--gray-800);">${(model.confidence * 100).toFixed(1)}%</div>
+                                    <div style="font-size: 20px; font-weight: 700; color: var(--gray-800);">${fmt(model.confidence)}</div>
                                 </div>
                                 <div>
                                     <div style="font-size: 12px; color: var(--gray-500); margin-bottom: 4px;">Accuracy</div>
-                                    <div style="font-size: 20px; font-weight: 700; color: var(--gray-800);">${(model.accuracy * 100).toFixed(1)}%</div>
+                                    <div style="font-size: 20px; font-weight: 700; color: var(--gray-800);">${fmt(model.accuracy)}</div>
                                 </div>
                                 <div>
                                     <div style="font-size: 12px; color: var(--gray-500); margin-bottom: 4px;">ROC AUC</div>
-                                    <div style="font-size: 20px; font-weight: 700; color: var(--primary);">${(model.auc * 100).toFixed(1)}%</div>
+                                    <div style="font-size: 20px; font-weight: 700; color: var(--primary);">${fmt(model.auc)}</div>
                                 </div>
                             </div>
                             <div style="margin-top: 12px;">
@@ -534,7 +916,8 @@ class NeuroLensApp {
                                 </span>
                             </div>
                         </div>
-                    `).join('')}
+                        `;
+                    }).join('')}
                 </div>
             `;
         }

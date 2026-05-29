@@ -1,0 +1,59 @@
+{
+  "cnn": {
+    "model": "cnn",
+    "label": "CNN",
+    "weights_found": true,
+    "metrics_found": true,
+    "metrics": {
+      "accuracy": 0.975,
+      "precision": 0.9846938775510204,
+      "recall": 0.965,
+      "f1_score": 0.9747474747474748,
+      "roc_auc": 0.992725,
+      "confusion_matrix": {
+        "tn": 197,
+        "fp": 3,
+        "fn": 7,
+        "tp": 193
+      }
+    }
+  },
+  "transfer": {
+    "model": "transfer",
+    "label": "Transfer Learning",
+    "weights_found": true,
+    "metrics_found": true,
+    "metrics": {
+      "accuracy": 0.9825,
+      "precision": 0.982801751094434,
+      "recall": 0.9825,
+      "f1_score": 0.9824972651976871,
+      "roc_auc": 0.9955999999999999,
+      "confusion_matrix": {
+        "tn": 199,
+        "fp": 1,
+        "fn": 6,
+        "tp": 194
+      }
+    }
+  },
+  "vit": {
+    "model": "vit",
+    "label": "Vision Transformer",
+    "weights_found": true,
+    "metrics_found": true,
+    "metrics": {
+      "accuracy": 0.98,
+      "precision": 0.9804323891502352,
+      "recall": 0.98,
+      "f1_score": 0.9799954989872722,
+      "roc_auc": 0.9975250000000001,
+      "confusion_matrix": {
+        "tn": 199,
+        "fp": 1,
+        "fn": 7,
+        "tp": 193
+      }
+    }
+  }
+}

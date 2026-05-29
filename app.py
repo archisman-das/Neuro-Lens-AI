@@ -9,6 +9,9 @@ from src.utils import load_metrics_json
 
 MODEL_TYPES = ['cnn', 'transfer', 'vit']
 
+# Search order for weights / metrics (best-trained snapshot first).
+ARTIFACT_DIR_NAMES = ['real_eval_fixed', 'real_eval_current', 'artifacts']
+
 
 def page_style():
     return """
@@ -52,14 +55,52 @@ def html_header():
     """
 
 
+def _resolve_artifact_dirs(primary):
+    """Return the ordered list of dirs we will probe for weights/metrics.
+
+    The Streamlit sidebar lets the user override the primary directory, but if
+    the user-provided one has no weights, we fall back to the shipped
+    real_eval_* snapshots (the only ones that exist in a fresh clone).
+    """
+    primary = Path(primary)
+    dirs = [primary]
+    repo_root = Path(__file__).resolve().parent
+    for name in ARTIFACT_DIR_NAMES:
+        candidate = repo_root / name
+        if candidate.exists() and candidate not in dirs:
+            dirs.append(candidate)
+    return dirs
+
+
 def load_model_weights(model_type, artifacts_dir):
-    path = artifacts_dir / model_type / 'best_weights.weights.h5'
-    return path if path.exists() else None
+    """Find best_weights.weights.h5 (or any *.weights.h5) for the given model.
+
+    Probes the user-provided artifacts_dir first, then falls back to
+    real_eval_fixed/, real_eval_current/, and artifacts/ so the dashboard works
+    out of the box with the snapshot weights that ship with this repo.
+    """
+    for base in _resolve_artifact_dirs(artifacts_dir):
+        model_dir = base / model_type
+        if not model_dir.exists():
+            continue
+        for candidate in (
+            model_dir / 'best_weights.weights.h5',
+            model_dir / 'best_weights.h5',
+        ):
+            if candidate.exists():
+                return candidate
+        for candidate in model_dir.glob('*.weights.h5'):
+            return candidate
+    return None
 
 
 def load_model_metrics(model_type, artifacts_dir):
-    path = artifacts_dir / f'{model_type}_evaluation_metrics.json'
-    return load_metrics_json(path) if path.exists() else None
+    """Find <model>_evaluation_metrics.json across the configured artifact dirs."""
+    for base in _resolve_artifact_dirs(artifacts_dir):
+        path = base / f'{model_type}_evaluation_metrics.json'
+        if path.exists():
+            return load_metrics_json(path)
+    return None
 
 
 def metric_summary(metrics):
@@ -210,10 +251,6 @@ def main():
                 st.warning('No available models found. Add model artifacts under ./artifacts.')
 
     st.markdown("<div class='footnote'>OncoVision - compact and attractive MRI model comparison for end users.</div>", unsafe_allow_html=True)
-
-
-if __name__ == '__main__':
-    main()
 
 
 if __name__ == '__main__':

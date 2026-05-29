@@ -1,0 +1,57 @@
+[info] Using device: cuda (NVIDIA GeForce RTX 4060 Laptop GPU)
+[info] Train: 1294  Val: 291  Test: 300
+[info] Model parameters: 4,417,217
+E:\Neuro-Lens-AI-main\Neuro-Lens-AI-main\src\train_segmentation_torch.py:246: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\pytorch\torch\csrc\autograd\generated\python_variable_methods.cpp:837.)
+  running_loss += float(loss)
+[epoch 01/30] train_loss=0.6106  train_dice~=0.4675  val_dice=0.5623  val_iou=0.4927  lr=1.00e-03  (98.2s)
+        -> new best val_dice=0.5623; weights saved to segmentation_artifacts\attention_unet_lgg\best_model.pt
+[epoch 02/30] train_loss=0.4260  train_dice~=0.5017  val_dice=0.5334  val_iou=0.4709  lr=1.00e-03  (33.2s)
+[epoch 03/30] train_loss=0.3879  train_dice~=0.5271  val_dice=0.5265  val_iou=0.4576  lr=1.00e-03  (33.0s)
+[epoch 04/30] train_loss=0.3771  train_dice~=0.5326  val_dice=0.4871  val_iou=0.4127  lr=1.00e-03  (33.0s)
+[epoch 05/30] train_loss=0.3658  train_dice~=0.5243  val_dice=0.5514  val_iou=0.4842  lr=5.00e-04  (33.7s)
+[epoch 06/30] train_loss=0.3498  train_dice~=0.5567  val_dice=0.5643  val_iou=0.4899  lr=5.00e-04  (45.0s)
+        -> new best val_dice=0.5643; weights saved to segmentation_artifacts\attention_unet_lgg\best_model.pt
+[epoch 07/30] train_loss=0.3476  train_dice~=0.5603  val_dice=0.5820  val_iou=0.5116  lr=5.00e-04  (33.4s)
+        -> new best val_dice=0.5820; weights saved to segmentation_artifacts\attention_unet_lgg\best_model.pt
+[epoch 08/30] train_loss=0.3428  train_dice~=0.5658  val_dice=0.5549  val_iou=0.4908  lr=5.00e-04  (33.9s)
+[epoch 09/30] train_loss=0.3417  train_dice~=0.5648  val_dice=0.5935  val_iou=0.5214  lr=5.00e-04  (34.8s)
+        -> new best val_dice=0.5935; weights saved to segmentation_artifacts\attention_unet_lgg\best_model.pt
+[epoch 10/30] train_loss=0.3359  train_dice~=0.5759  val_dice=0.6071  val_iou=0.5401  lr=5.00e-04  (38.9s)
+        -> new best val_dice=0.6071; weights saved to segmentation_artifacts\attention_unet_lgg\best_model.pt
+[epoch 11/30] train_loss=0.3358  train_dice~=0.5729  val_dice=0.5801  val_iou=0.5118  lr=5.00e-04  (36.1s)
+[epoch 12/30] train_loss=0.3343  train_dice~=0.5809  val_dice=0.6230  val_iou=0.5563  lr=5.00e-04  (38.0s)
+        -> new best val_dice=0.6230; weights saved to segmentation_artifacts\attention_unet_lgg\best_model.pt
+[epoch 13/30] train_loss=0.3340  train_dice~=0.5772  val_dice=0.5600  val_iou=0.4926  lr=5.00e-04  (39.1s)
+[epoch 14/30] train_loss=0.3281  train_dice~=0.5874  val_dice=0.5685  val_iou=0.4997  lr=5.00e-04  (40.1s)
+[epoch 15/30] train_loss=0.3319  train_dice~=0.5863  val_dice=0.5657  val_iou=0.4941  lr=5.00e-04  (42.9s)
+[epoch 16/30] train_loss=0.3277  train_dice~=0.5953  val_dice=0.5751  val_iou=0.5073  lr=2.50e-04  (44.1s)
+[epoch 17/30] train_loss=0.3223  train_dice~=0.6019  val_dice=0.5560  val_iou=0.4887  lr=2.50e-04  (43.6s)
+[epoch 18/30] train_loss=0.3196  train_dice~=0.5951  val_dice=0.5745  val_iou=0.5067  lr=2.50e-04  (43.4s)
+[epoch 19/30] train_loss=0.3177  train_dice~=0.6069  val_dice=0.5905  val_iou=0.5229  lr=2.50e-04  (44.2s)
+[epoch 20/30] train_loss=0.3167  train_dice~=0.5977  val_dice=0.5592  val_iou=0.4914  lr=1.25e-04  (44.8s)
+[info] Early stopping: no improvement in 8 epochs.
+[info] Final evaluation:
+{
+  "val": {
+    "dice": 0.6230372924377141,
+    "iou": 0.5563343539394229,
+    "pixel_accuracy": 0.9923873935660271,
+    "bce_loss": 0.03188488586273121,
+    "positive_voxels_true": 217132,
+    "positive_voxels_pred": 209674,
+    "micro_dice": 0.8080064478943595,
+    "micro_iou": 0.6778614250614251
+  },
+  "test": {
+    "dice": 0.5247749511732153,
+    "iou": 0.4589938624061077,
+    "pixel_accuracy": 0.9827646740277608,
+    "bce_loss": 0.06074004266799117,
+    "positive_voxels_true": 222672,
+    "positive_voxels_pred": 330725,
+    "micro_dice": 0.6555655343270744,
+    "micro_iou": 0.4876143471961248
+  }
+}
+[done] Best val Dice = 0.6230

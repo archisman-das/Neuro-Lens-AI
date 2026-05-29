@@ -1,0 +1,126 @@
+[info] device=cuda amp=True (NVIDIA GeForce RTX 4060 Laptop GPU)
+[info] dataset_lgg/train: 1294 samples
+[info] dataset_lgg/val: 291 samples
+[info] dataset_lgg/test: 300 samples
+[info] dataset_real/train: 3168 samples
+[info] dataset_real/val: 398 samples
+[info] dataset_real/test: 395 samples
+[info] total train=4462 val=689 test=695
+[info] model: Unet + resnet34 (pretrained=imagenet) - 24,436,369 params
+E:\Neuro-Lens-AI-main\Neuro-Lens-AI-main\src\train_segmentation_v2.py:356: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\pytorch\torch\csrc\autograd\generated\python_variable_methods.cpp:837.)
+  running_loss += float(loss)
+[epoch 01/50] train_loss=0.6692  val_dice=0.4802  val_iou=0.4180  val_bce=0.1030  lr=1.00e-04  (139.9s)
+        -> new best val_dice=0.4802; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 02/50] train_loss=0.5172  val_dice=0.4452  val_iou=0.3791  val_bce=0.0780  lr=2.00e-04  (139.9s)
+[epoch 03/50] train_loss=0.4839  val_dice=0.4342  val_iou=0.3806  val_bce=0.0455  lr=3.00e-04  (144.5s)
+[epoch 04/50] train_loss=0.4695  val_dice=0.3909  val_iou=0.3258  val_bce=0.0534  lr=3.00e-04  (151.2s)
+[epoch 05/50] train_loss=0.4645  val_dice=0.4356  val_iou=0.3722  val_bce=0.0483  lr=2.99e-04  (157.7s)
+[epoch 06/50] train_loss=0.4584  val_dice=0.3781  val_iou=0.3145  val_bce=0.0647  lr=2.97e-04  (165.0s)
+[epoch 07/50] train_loss=0.4555  val_dice=0.4326  val_iou=0.3741  val_bce=0.0484  lr=2.95e-04  (168.5s)
+[epoch 08/50] train_loss=0.4504  val_dice=0.4422  val_iou=0.3856  val_bce=0.0461  lr=2.92e-04  (172.1s)
+[epoch 09/50] train_loss=0.4496  val_dice=0.4536  val_iou=0.3893  val_bce=0.0443  lr=2.88e-04  (176.8s)
+[epoch 10/50] train_loss=0.4476  val_dice=0.5104  val_iou=0.4478  val_bce=0.0397  lr=2.84e-04  (178.6s)
+        -> new best val_dice=0.5104; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 11/50] train_loss=0.4437  val_dice=0.4980  val_iou=0.4403  val_bce=0.0436  lr=2.79e-04  (178.7s)
+[epoch 12/50] train_loss=0.4406  val_dice=0.5247  val_iou=0.4651  val_bce=0.0422  lr=2.74e-04  (178.5s)
+        -> new best val_dice=0.5247; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 13/50] train_loss=0.4385  val_dice=0.5278  val_iou=0.4685  val_bce=0.0389  lr=2.68e-04  (178.6s)
+        -> new best val_dice=0.5278; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 14/50] train_loss=0.4390  val_dice=0.4712  val_iou=0.4107  val_bce=0.0427  lr=2.61e-04  (180.3s)
+[epoch 15/50] train_loss=0.4374  val_dice=0.4651  val_iou=0.4045  val_bce=0.0458  lr=2.54e-04  (182.4s)
+[epoch 16/50] train_loss=0.4339  val_dice=0.4298  val_iou=0.3683  val_bce=0.0489  lr=2.47e-04  (182.4s)
+[epoch 17/50] train_loss=0.4358  val_dice=0.5329  val_iou=0.4773  val_bce=0.0421  lr=2.39e-04  (181.2s)
+        -> new best val_dice=0.5329; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 18/50] train_loss=0.4318  val_dice=0.5425  val_iou=0.4822  val_bce=0.0410  lr=2.31e-04  (180.9s)
+        -> new best val_dice=0.5425; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 19/50] train_loss=0.4306  val_dice=0.5092  val_iou=0.4472  val_bce=0.0458  lr=2.22e-04  (180.4s)
+[epoch 20/50] train_loss=0.4275  val_dice=0.5343  val_iou=0.4737  val_bce=0.0387  lr=2.13e-04  (182.0s)
+[epoch 21/50] train_loss=0.4255  val_dice=0.5305  val_iou=0.4709  val_bce=0.0394  lr=2.04e-04  (187.3s)
+[epoch 22/50] train_loss=0.4251  val_dice=0.4875  val_iou=0.4285  val_bce=0.0413  lr=1.95e-04  (185.4s)
+[epoch 23/50] train_loss=0.4234  val_dice=0.5431  val_iou=0.4829  val_bce=0.0373  lr=1.85e-04  (187.3s)
+        -> new best val_dice=0.5431; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 24/50] train_loss=0.4229  val_dice=0.5536  val_iou=0.4916  val_bce=0.0372  lr=1.75e-04  (186.1s)
+        -> new best val_dice=0.5536; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 25/50] train_loss=0.4240  val_dice=0.5022  val_iou=0.4452  val_bce=0.0394  lr=1.65e-04  (185.9s)
+[epoch 26/50] train_loss=0.4188  val_dice=0.5265  val_iou=0.4692  val_bce=0.0375  lr=1.55e-04  (185.5s)
+[epoch 27/50] train_loss=0.4188  val_dice=0.5529  val_iou=0.4929  val_bce=0.0395  lr=1.46e-04  (186.4s)
+[epoch 28/50] train_loss=0.4165  val_dice=0.5576  val_iou=0.4969  val_bce=0.0371  lr=1.36e-04  (186.6s)
+        -> new best val_dice=0.5576; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 29/50] train_loss=0.4161  val_dice=0.5600  val_iou=0.4999  val_bce=0.0388  lr=1.26e-04  (186.8s)
+        -> new best val_dice=0.5600; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 30/50] train_loss=0.4148  val_dice=0.5508  val_iou=0.4903  val_bce=0.0379  lr=1.16e-04  (190.0s)
+[epoch 31/50] train_loss=0.4122  val_dice=0.6035  val_iou=0.5448  val_bce=0.0374  lr=1.06e-04  (187.1s)
+        -> new best val_dice=0.6035; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 32/50] train_loss=0.4140  val_dice=0.6099  val_iou=0.5518  val_bce=0.0377  lr=9.68e-05  (189.5s)
+        -> new best val_dice=0.6099; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 33/50] train_loss=0.4097  val_dice=0.5698  val_iou=0.5112  val_bce=0.0370  lr=8.76e-05  (187.5s)
+[epoch 34/50] train_loss=0.4082  val_dice=0.5919  val_iou=0.5311  val_bce=0.0369  lr=7.87e-05  (189.8s)
+[epoch 35/50] train_loss=0.4099  val_dice=0.6053  val_iou=0.5454  val_bce=0.0355  lr=7.01e-05  (189.8s)
+[epoch 36/50] train_loss=0.4047  val_dice=0.6148  val_iou=0.5557  val_bce=0.0376  lr=6.18e-05  (187.7s)
+        -> new best val_dice=0.6148; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 37/50] train_loss=0.4061  val_dice=0.6627  val_iou=0.6040  val_bce=0.0372  lr=5.40e-05  (188.7s)
+        -> new best val_dice=0.6627; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 38/50] train_loss=0.4062  val_dice=0.6814  val_iou=0.6209  val_bce=0.0363  lr=4.66e-05  (186.4s)
+        -> new best val_dice=0.6814; weights saved to segmentation_artifacts\attention_unet_v2\best_model.pt
+[epoch 39/50] train_loss=0.4036  val_dice=0.6604  val_iou=0.6010  val_bce=0.0369  lr=3.96e-05  (192.9s)
+[epoch 40/50] train_loss=0.4032  val_dice=0.6531  val_iou=0.5929  val_bce=0.0349  lr=3.32e-05  (202.1s)
+[epoch 41/50] train_loss=0.4012  val_dice=0.6556  val_iou=0.5968  val_bce=0.0355  lr=2.72e-05  (206.5s)
+[epoch 42/50] train_loss=0.4011  val_dice=0.6253  val_iou=0.5662  val_bce=0.0359  lr=2.19e-05  (214.9s)
+[epoch 43/50] train_loss=0.3992  val_dice=0.6523  val_iou=0.5936  val_bce=0.0350  lr=1.71e-05  (208.5s)
+[epoch 44/50] train_loss=0.3989  val_dice=0.6573  val_iou=0.5980  val_bce=0.0345  lr=1.29e-05  (202.1s)
+[epoch 45/50] train_loss=0.3989  val_dice=0.6565  val_iou=0.5973  val_bce=0.0349  lr=9.27e-06  (202.5s)
+[epoch 46/50] train_loss=0.3966  val_dice=0.6712  val_iou=0.6119  val_bce=0.0343  lr=6.31e-06  (214.6s)
+[epoch 47/50] train_loss=0.3984  val_dice=0.6596  val_iou=0.6000  val_bce=0.0351  lr=4.00e-06  (206.5s)
+[epoch 48/50] train_loss=0.3991  val_dice=0.6652  val_iou=0.6058  val_bce=0.0351  lr=2.33e-06  (201.9s)
+[epoch 49/50] train_loss=0.3971  val_dice=0.6708  val_iou=0.6116  val_bce=0.0344  lr=1.33e-06  (205.5s)
+[epoch 50/50] train_loss=0.3964  val_dice=0.6774  val_iou=0.6187  val_bce=0.0341  lr=1.00e-06  (204.0s)
+[info] Early stopping: no improvement in 12 epochs.
+[info] Final evaluation:
+{
+  "val": {
+    "split": "val",
+    "dice": 0.6813658489610753,
+    "iou": 0.6208579874276912,
+    "pixel_accuracy": 0.9917373657226562,
+    "bce_loss": 0.0362657174674109,
+    "positive_voxels_true": 632029,
+    "positive_voxels_pred": 690438,
+    "micro_dice": 0.7336304043881624,
+    "micro_iou": 0.5793177654693408
+  },
+  "test": {
+    "split": "test",
+    "dice": 0.6525378922621409,
+    "iou": 0.5909005418933672,
+    "pixel_accuracy": 0.99121696373512,
+    "bce_loss": 0.03852014879471269,
+    "positive_voxels_true": 666122,
+    "positive_voxels_pred": 706495,
+    "micro_dice": 0.7086463303310392,
+    "micro_iou": 0.5487623932742616
+  },
+  "test_dataset_lgg_test": {
+    "split": "dataset_lgg/test",
+    "dice": 0.6608232761684217,
+    "iou": 0.5923687270597408,
+    "pixel_accuracy": 0.9921279706453022,
+    "bce_loss": 0.03212292972449703,
+    "positive_voxels_true": 395995,
+    "positive_voxels_pred": 448830,
+    "micro_dice": 0.8145379220548634,
+    "micro_iou": 0.6871058443866649
+  },
+  "test_dataset_real_test": {
+    "split": "dataset_real/test",
+    "dice": 0.6426037049293518,
+    "iou": 0.5863454335927963,
+    "pixel_accuracy": 0.99048828125,
+    "bce_loss": 0.04365229226881638,
+    "positive_voxels_true": 270127,
+    "positive_voxels_pred": 257665,
+    "micro_dice": 0.539147997696062,
+    "micro_iou": 0.3690640782541704
+  }
+}
+[done] Best val Dice = 0.6814

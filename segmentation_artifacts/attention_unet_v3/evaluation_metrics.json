@@ -1,0 +1,46 @@
+{
+  "val": {
+    "split": "val",
+    "dice": 0.8449882409901012,
+    "iou": 0.780036243601183,
+    "pixel_accuracy": 0.9958773143927545,
+    "bce_loss": 0.01959477613708566,
+    "positive_voxels_true": 3773777,
+    "positive_voxels_pred": 3604660,
+    "micro_dice": 0.9092405342757551,
+    "micro_iou": 0.8335848212621613
+  },
+  "test": {
+    "split": "test",
+    "dice": 0.8356128127065827,
+    "iou": 0.7706399378152304,
+    "pixel_accuracy": 0.9958632701817278,
+    "bce_loss": 0.02036112207618184,
+    "positive_voxels_true": 3640019,
+    "positive_voxels_pred": 3589392,
+    "micro_dice": 0.9060054823276751,
+    "micro_iou": 0.828162726313628
+  },
+  "test_dataset_lgg_test": {
+    "split": "dataset_lgg/test",
+    "dice": 0.7706639635327616,
+    "iou": 0.7036554843775535,
+    "pixel_accuracy": 0.9939756346376318,
+    "bce_loss": 0.031566028231999985,
+    "positive_voxels_true": 222672,
+    "positive_voxels_pred": 231331,
+    "micro_dice": 0.8517036231038121,
+    "micro_iou": 0.7417106247482401
+  },
+  "test_dataset_brats_test": {
+    "split": "dataset_brats/test",
+    "dice": 0.8400390599731449,
+    "iou": 0.7751743056964896,
+    "pixel_accuracy": 0.9960002629283765,
+    "bce_loss": 0.019545042514533414,
+    "positive_voxels_true": 3417347,
+    "positive_voxels_pred": 3358061,
+    "micro_dice": 0.9096441129449326,
+    "micro_iou": 0.8342634948317493
+  }
+}

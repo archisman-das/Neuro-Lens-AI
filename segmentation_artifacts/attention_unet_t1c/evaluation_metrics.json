@@ -1,0 +1,24 @@
+{
+  "val": {
+    "split": "val",
+    "dice": 0.6427500948927851,
+    "iou": 0.5563855390073451,
+    "pixel_accuracy": 0.9904734913585256,
+    "bce_loss": 0.04066796167823924,
+    "positive_voxels_true": 3556645,
+    "positive_voxels_pred": 3434757,
+    "micro_dice": 0.7930480896392454,
+    "micro_iou": 0.6570668498318261
+  },
+  "test": {
+    "split": "test",
+    "dice": 0.6505545605324973,
+    "iou": 0.5674816422169051,
+    "pixel_accuracy": 0.9915141442607593,
+    "bce_loss": 0.036012192107535465,
+    "positive_voxels_true": 3417347,
+    "positive_voxels_pred": 3414448,
+    "micro_dice": 0.809886420772286,
+    "micro_iou": 0.6805118729069841
+  }
+}

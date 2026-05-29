@@ -3,6 +3,7 @@ Advanced Training Script with Robustness Analysis, Uncertainty Estimation, and M
 """
 
 import argparse
+import sys
 import numpy as np
 import tensorflow as tf
 from pathlib import Path
@@ -10,9 +11,13 @@ import json
 import os
 from datetime import datetime
 
-from segmentation_models import build_unet, build_attention_unet, dice_loss, combined_loss
-from robustness_analysis import RobustnessAnalyzer, UncertaintyEstimator, MulticlassSegmentationModel
-from kfold_validation import SegmentationKFoldValidator
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.append(str(_REPO_ROOT))
+
+from src.segmentation_models import build_unet, build_attention_unet, dice_loss, combined_loss
+from src.robustness_analysis import RobustnessAnalyzer, UncertaintyEstimator, MulticlassSegmentationModel
+from src.kfold_validation import SegmentationKFoldValidator
 
 
 def train_with_robustness_analysis(config):
@@ -238,55 +243,159 @@ def train_multiclass_model(config):
     return model, metrics
 
 
+def _load_split_images_masks(split_dir, image_size):
+    """Load (image, mask) pairs from a split directory.
+
+    Expects either:
+      <split_dir>/images/*.jpg|png and <split_dir>/masks/*.jpg|png  (paired by sorted order)
+    or, if no masks dir is present, falls back to loading classification-style
+    folders (tumor / no_tumor) and synthesising binary masks via Otsu thresholding
+    on the intensity channel for tumor images (zero mask for no_tumor).
+    """
+    import cv2
+    split_dir = Path(split_dir)
+    images_dir = split_dir / 'images'
+    masks_dir = split_dir / 'masks'
+
+    def _read_image(path):
+        img = cv2.imread(str(path))
+        if img is None:
+            raise FileNotFoundError(f'Could not read image: {path}')
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, image_size)
+        return img
+
+    def _read_mask(path):
+        m = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if m is None:
+            raise FileNotFoundError(f'Could not read mask: {path}')
+        m = cv2.resize(m, image_size, interpolation=cv2.INTER_NEAREST)
+        m = (m.astype(np.float32) / 255.0 > 0.5).astype(np.float32)
+        return np.expand_dims(m, axis=-1)
+
+    if images_dir.exists() and masks_dir.exists():
+        image_paths = sorted([*images_dir.glob('*.png'), *images_dir.glob('*.jpg'), *images_dir.glob('*.jpeg')])
+        mask_paths = sorted([*masks_dir.glob('*.png'), *masks_dir.glob('*.jpg'), *masks_dir.glob('*.jpeg')])
+        if len(image_paths) != len(mask_paths):
+            raise ValueError(f'Image/mask count mismatch in {split_dir}: {len(image_paths)} vs {len(mask_paths)}')
+        X = np.stack([_read_image(p).astype(np.float32) for p in image_paths]) if image_paths else np.zeros((0, *image_size, 3), np.float32)
+        y = np.stack([_read_mask(p) for p in mask_paths]) if mask_paths else np.zeros((0, *image_size, 1), np.float32)
+        return X, y
+
+    # Fallback: classification folders with synthesised masks via Otsu thresholding.
+    tumor_dir = split_dir / 'tumor'
+    no_tumor_dir = split_dir / 'no_tumor'
+    if not tumor_dir.exists() and not no_tumor_dir.exists():
+        raise FileNotFoundError(
+            f'No images/masks/ or tumor/no_tumor/ subfolders found under {split_dir}.'
+        )
+
+    X_list = []
+    y_list = []
+    if tumor_dir.exists():
+        for p in sorted([*tumor_dir.glob('*.png'), *tumor_dir.glob('*.jpg'), *tumor_dir.glob('*.jpeg')]):
+            img = _read_image(p)
+            gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            mask = (mask.astype(np.float32) / 255.0)
+            X_list.append(img.astype(np.float32))
+            y_list.append(np.expand_dims(mask, axis=-1))
+    if no_tumor_dir.exists():
+        for p in sorted([*no_tumor_dir.glob('*.png'), *no_tumor_dir.glob('*.jpg'), *no_tumor_dir.glob('*.jpeg')]):
+            img = _read_image(p)
+            X_list.append(img.astype(np.float32))
+            y_list.append(np.zeros((*image_size, 1), np.float32))
+
+    if not X_list:
+        raise ValueError(f'No images found under {split_dir}.')
+    return np.stack(X_list), np.stack(y_list)
+
+
 def load_data(config):
+    """Load binary segmentation data from the real dataset directory.
+
+    Reads dataset_real/{train,val,test}/. If ground-truth masks are absent,
+    pseudo-masks are synthesised via Otsu thresholding (see
+    _load_split_images_masks). This was previously a random-noise placeholder.
     """
-    Load binary segmentation data
-    
-    Args:
-        config: Configuration dictionary
-        
-    Returns:
-        X_train, y_train, X_val, y_val, X_test, y_test
-    """
-    # Placeholder - implement based on your data structure
-    # For now, return dummy data
+    data_dir = Path(config.get('data_dir', './dataset_real'))
     image_size = tuple(config.get('image_size', [224, 224]))
-    
-    # Generate dummy data for testing
-    X = np.random.rand(100, *image_size, 3).astype(np.float32)
-    y = (np.random.rand(100, *image_size, 1) > 0.7).astype(np.float32)
-    
-    # Split data
-    from sklearn.model_selection import train_test_split
-    X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
-    
+
+    train_dir = data_dir / 'train'
+    val_dir = data_dir / 'val'
+    test_dir = data_dir / 'test'
+
+    if not train_dir.exists():
+        raise FileNotFoundError(
+            f'Training directory not found: {train_dir}. '
+            'Run prepare_real_dataset.py or point --data_dir to a directory with train/, val/, test/.'
+        )
+
+    X_train, y_train = _load_split_images_masks(train_dir, image_size)
+    if val_dir.exists():
+        X_val, y_val = _load_split_images_masks(val_dir, image_size)
+    else:
+        from sklearn.model_selection import train_test_split
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train, test_size=0.15, random_state=config.get('random_seed', 42)
+        )
+    if test_dir.exists():
+        X_test, y_test = _load_split_images_masks(test_dir, image_size)
+    else:
+        X_test, y_test = X_val, y_val
+
     return X_train, y_train, X_val, y_val, X_test, y_test
 
 
 def load_multiclass_data(config):
+    """Load multiclass segmentation data.
+
+    Expects <data_dir>/<split>/images/*.png and <data_dir>/<split>/masks/*.png
+    where mask pixel values encode the class id (0..num_classes-1). No real
+    multiclass-segmentation data ships with this repo; this function will raise
+    a clear error rather than silently train on noise (previous behaviour).
     """
-    Load multiclass segmentation data
-    
-    Args:
-        config: Configuration dictionary
-        
-    Returns:
-        X_train, y_train, X_val, y_val, X_test, y_test
-    """
-    # Placeholder - implement based on your data structure
+    import cv2
+    data_dir = Path(config.get('multiclass_data_dir', config.get('data_dir', './multiclass_dataset')))
     image_size = tuple(config.get('image_size', [224, 224]))
     num_classes = config.get('num_classes', 4)
-    
-    # Generate dummy data for testing
-    X = np.random.rand(200, *image_size, 3).astype(np.float32)
-    y = np.random.randint(0, num_classes, size=(200, *image_size)).astype(np.int32)
-    
-    # Split data
-    from sklearn.model_selection import train_test_split
-    X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
-    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
-    
+
+    def _read_split(split):
+        split_dir = data_dir / split
+        images_dir = split_dir / 'images'
+        masks_dir = split_dir / 'masks'
+        if not (images_dir.exists() and masks_dir.exists()):
+            raise FileNotFoundError(
+                f'Multiclass split missing images/ or masks/ at {split_dir}. '
+                'Provide a dataset with per-pixel class id masks before training the multiclass model.'
+            )
+        image_paths = sorted([*images_dir.glob('*.png'), *images_dir.glob('*.jpg')])
+        mask_paths = sorted([*masks_dir.glob('*.png'), *masks_dir.glob('*.jpg')])
+        if len(image_paths) != len(mask_paths):
+            raise ValueError(f'{split}: {len(image_paths)} images vs {len(mask_paths)} masks.')
+        Xs, ys = [], []
+        for ip, mp in zip(image_paths, mask_paths):
+            img = cv2.cvtColor(cv2.imread(str(ip)), cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, image_size).astype(np.float32)
+            m = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE)
+            m = cv2.resize(m, image_size, interpolation=cv2.INTER_NEAREST).astype(np.int32)
+            m = np.clip(m, 0, num_classes - 1)
+            Xs.append(img)
+            ys.append(m)
+        return np.stack(Xs), np.stack(ys)
+
+    X_train, y_train = _read_split('train')
+    X_val, y_val = _read_split('val') if (data_dir / 'val').exists() else (None, None)
+    X_test, y_test = _read_split('test') if (data_dir / 'test').exists() else (None, None)
+
+    if X_val is None:
+        from sklearn.model_selection import train_test_split
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train, test_size=0.15, random_state=config.get('random_seed', 42)
+        )
+    if X_test is None:
+        X_test, y_test = X_val, y_val
+
     return X_train, y_train, X_val, y_val, X_test, y_test
 
 

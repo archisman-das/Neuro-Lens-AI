@@ -78,24 +78,36 @@ Explainability utilities live in `src/explain.py` and `src/utils.py`. The dashbo
 
 ### 4.5 Segmentation Research
 
-Segmentation code supports U-Net style architectures and advanced experiment workflows.
+The active segmentation pipeline lives in:
 
-Important files:
+- `src/segmentation_torch.py` - PyTorch Attention U-Net (GPU)
+- `src/train_segmentation_torch.py` - GPU training script
+- `generate_pseudo_masks.py` - synthesises masks from the classification dataset
 
-- `src/segmentation_models.py`
-- `src/train_segmentation.py`
-- `src/advanced_models.py`
-- `src/advanced_training.py`
-- `src/kfold_validation.py`
-- `src/ablation_study.py`
-- `src/robustness_analysis.py`
+PyTorch is used here because TF 2.21 has no native-Windows GPU support; the rest of the project stays on TF/Keras for the classifiers.
 
-Supported segmentation model variants include:
+The reference TensorFlow framework is preserved for k-fold / ablation / robustness experimentation:
 
-- U-Net
-- Attention U-Net
-- Residual U-Net
-- Multi-modal U-Net
+- `src/segmentation_models.py` - U-Net / Attention U-Net / Res U-Net / Multi-modal U-Net (TF)
+- `src/train_segmentation.py` - TF training script
+- `src/kfold_validation.py`, `src/ablation_study.py`, `src/robustness_analysis.py`
+
+Supported segmentation model variants:
+
+- Attention U-Net (default - active PyTorch pipeline)
+- U-Net (TF reference)
+- Residual U-Net (TF reference)
+- Multi-modal U-Net (TF reference)
+
+### 4.6 Status of "Advanced" Modules (3D MRI, Federated Learning, SSL)
+
+`src/advanced_models.py` defines `MRI3DTransformer`, `FederatedLearningServer/Client`, and `SelfSupervisedPretrainer`. These are reference implementations:
+
+- 3D ViT: now uses a real `Conv3D`-strided patch embedding (was a flat `Reshape` previously). Still requires volumetric data the repo does not ship.
+- Federated learning: FedAvg aggregation is correct; evaluation now uses a held-out set when registered via `set_eval_data()` (was leaking client train data into eval).
+- Self-supervised: rotation / jigsaw / **SimCLR NT-Xent contrastive** pre-training (the contrastive branch previously used an incoherent sigmoid + sparse_categorical_crossentropy combination - replaced with a real NT-Xent loss and two-view augmented batching).
+
+None of these are invoked by `train.py` or the dashboards; they are libraries waiting for the appropriate datasets and a driver script.
 
 ## 5. Environment Setup
 
@@ -157,15 +169,33 @@ Common options:
 - `--learning_rate`: optimizer learning rate
 - `--output`: artifact output directory
 
-### 7.2 Segmentation Training
-
-Example:
+### 7.2 Segmentation Training (PyTorch, GPU)
 
 ```bash
-python src/train_segmentation.py --data_dir dataset --model_type unet --epochs 100 --batch_size 16
+# 1. Generate pseudo-masks once (Otsu on tumor JPGs; empty masks for no_tumor):
+python generate_pseudo_masks.py --source dataset_real --output dataset_real --clean
+
+# 2. Train Attention U-Net on GPU:
+python src/train_segmentation_torch.py --data_dir dataset_real \
+    --epochs 25 --batch_size 8 --image_size 256 --base_filters 32 --patience 6
 ```
 
-Useful segmentation options:
+Outputs land in `segmentation_artifacts/attention_unet/`. Useful flags:
+
+- `--device {cuda,cpu}`: target device (auto-detect; CUDA used when available)
+- `--learning_rate`: Adam learning rate (default 1e-3)
+- `--dropout`: dropout rate (default 0.2)
+- `--dice_weight`: dice weight in the combined Dice + BCE loss (default 0.6)
+- `--num_workers`: DataLoader workers; default 0 is safest on Windows
+
+### 7.3 Reference TF Segmentation Training
+
+```bash
+python src/train_segmentation.py --data_dir dataset_real --model_type attention_unet \
+    --epochs 25 --batch_size 8
+```
+
+Useful TF flags:
 
 - `--model_type`: `unet`, `attention_unet`, `res_unet`, or `multi_modal_unet`
 - `--image_size`: input image size

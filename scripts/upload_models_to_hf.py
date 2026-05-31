@@ -35,6 +35,16 @@ sys.path.insert(0, str(ROOT))
 
 # (local path relative to repo root, target path inside the Model repo)
 ARTIFACT_MAP = [
+    # v8 ConvNeXt-Tiny + 384px + Tversky (current production champion).
+    # dynamo-exported ONNX is split into graph (.onnx) + external weights
+    # (.onnx.data). Both MUST be uploaded; ORT auto-loads the sibling.
+    ('model/best_micro.onnx',
+     'attention_unet_v8/best_micro.onnx'),
+    ('model/best_micro.onnx.data',
+     'attention_unet_v8/best_micro.onnx.data'),
+    # v5 (kept for fallback / A-B testing)
+    ('segmentation_artifacts/attention_unet_v5/best_model.onnx',
+     'attention_unet_v5/best_model.onnx'),
     ('segmentation_artifacts/attention_unet_v3/best_model.onnx',
      'attention_unet_v3/best_model.onnx'),
     ('segmentation_artifacts/attention_unet_t1c/best_model.onnx',
@@ -46,6 +56,12 @@ ARTIFACT_MAP = [
     ('real_eval_current/vit/best_weights.onnx',
      'vit/best_weights.onnx'),
 ]
+
+# Conformal-counterfactual calibration artifacts. Each is a small JSON
+# (~1 KB) holding one intervention's calibrated quantile q. Loaded by
+# src/research/dashboard_integration.py at request time to produce
+# voxelwise prediction sets with (1-alpha) post-intervention coverage.
+CONFORMAL_DIR = ROOT / 'conformal_artifacts'
 
 
 def main():
@@ -87,7 +103,17 @@ def main():
     total_bytes = 0
     t_start = time.perf_counter()
 
-    for local_rel, repo_rel in ARTIFACT_MAP:
+    upload_targets = list(ARTIFACT_MAP)
+    # Auto-discover conformal calibration JSONs so we don't have to edit
+    # ARTIFACT_MAP every time a new intervention is calibrated.
+    if CONFORMAL_DIR.exists():
+        for p in sorted(CONFORMAL_DIR.glob('*.json')):
+            upload_targets.append(
+                (str(p.relative_to(ROOT)).replace('\\', '/'),
+                 f'conformal_artifacts/{p.name}')
+            )
+
+    for local_rel, repo_rel in upload_targets:
         local = ROOT / local_rel
         if not local.exists():
             print(f'[skip] {local_rel} not found locally')

@@ -1,0 +1,31 @@
+{
+  "q": 0.9964340925216675,
+  "alpha": 0.1,
+  "threshold": 0.5,
+  "band_low": 0.3,
+  "band_high": 0.7,
+  "include_positive_in_pool": true,
+  "intervention": {
+    "name": "intensity_shift",
+    "params": {
+      "delta": -0.1
+    }
+  },
+  "calib_report": {
+    "n_calib": 326,
+    "n_voxels_used": 531671,
+    "alpha": 0.1,
+    "q": 0.9964340925216675,
+    "intervention": {
+      "name": "intensity_shift",
+      "params": {
+        "delta": -0.1
+      }
+    },
+    "threshold": 0.5,
+    "band_low": 0.3,
+    "band_high": 0.7,
+    "weighted": false,
+    "empirical_coverage_on_calib": 0.9000020689486543
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "q": 0.9965452551841736,
+  "alpha": 0.1,
+  "threshold": 0.5,
+  "band_low": 0.3,
+  "band_high": 0.7,
+  "include_positive_in_pool": true,
+  "intervention": {
+    "name": "modality",
+    "params": {
+      "keep_channel": 2,
+      "fill": "mean"
+    }
+  },
+  "calib_report": {
+    "n_calib": 326,
+    "n_voxels_used": 531654,
+    "alpha": 0.1,
+    "q": 0.9965452551841736,
+    "intervention": {
+      "name": "modality",
+      "params": {
+        "keep_channel": 2,
+        "fill": "mean"
+      }
+    },
+    "threshold": 0.5,
+    "band_low": 0.3,
+    "band_high": 0.7,
+    "weighted": false,
+    "empirical_coverage_on_calib": 0.9000026332915768
+  }
+}

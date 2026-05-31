@@ -1,0 +1,5 @@
+# Colab pre-installs: torch, torchvision (newer than what we need),
+# numpy, pillow, scikit-image. We only need to add the segmentation
+# library and timm (which SMP uses for the ConvNeXt-Tiny encoder).
+segmentation-models-pytorch>=0.3.3
+timm>=0.9.16

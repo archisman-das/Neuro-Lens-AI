@@ -31,3 +31,9 @@ pyyaml>=6.0
 huggingface_hub>=0.24
 torch>=2.0
 torchvision>=0.15
+# MedSAM cascade refiner (Ma et al., Nat Commun 2024). ViT-B image encoder +
+# mask decoder loaded from flaviagiammarino/medsam-vit-base on first request.
+# Mandatory on every positive segmentation; transparently skips empty masks.
+transformers>=4.40
+accelerate>=0.20
+safetensors>=0.4

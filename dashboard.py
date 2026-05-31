@@ -904,35 +904,55 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
     mask_bin = (mask_rgb[..., 0] > 127).astype(np.uint8)
 
     # --- 2) Classifiers + Grad-CAM -----------------------------------------
+    # KILL-SWITCH (CLASSIFIERS_DISABLE_USE_SEG_ONLY=1):
+    # The 3-classifier ensemble (cnn/transfer/vit) was trained ONLY on Kaggle
+    # 4-class axial T1 and was measured on OOD samples at recall = 0-67% per
+    # classifier, vs v8 segmentation at 75-100% recall on the same data
+    # (see scripts/eval_ood_classifiers_brutal.py output, 2026-05-31). While
+    # the v8-distribution classifiers are retraining (scripts/retrain_
+    # classifiers_on_v8.py) we let the operator turn the classifier ensemble
+    # OFF entirely with this env var and derive the verdict from v8 alone.
+    # When ON, downstream sees classifier_results={} which the cascade
+    # gracefully treats as "no classifier signal".
+    seg_only_mode = os.environ.get(
+        'CLASSIFIERS_DISABLE_USE_SEG_ONLY', '0').strip().lower() in ('1', 'true', 'yes')
     classifier_results = {}
     gradcam_for_features = None
-    try:
-        per_model = predict_image('all', image_bytes)
-        if isinstance(per_model, dict):
-            for name, res in per_model.items():
-                if not isinstance(res, dict):
-                    continue
-                classifier_results[name] = {
-                    'probability': res.get('probability'),
-                    'confidence': res.get('confidence'),
-                    'label': res.get('label'),
-                    'display_label': res.get('display_label'),
-                    'weights': res.get('weights'),
-                    'gradcam': res.get('gradcam'),
-                }
-                # Use ViT's Grad-CAM if present (the strongest model usually)
-                # else fall back to whichever has one.
-                if gradcam_for_features is None and res.get('gradcam'):
-                    cam_rgb = _decode_data_url(res['gradcam'])
-                    if cam_rgb is not None:
-                        # Convert overlay heatmap back to a [0,1] saliency proxy
-                        # by taking max over channels (color intensity).
-                        cam_gray = cam_rgb.max(axis=2).astype(np.float32) / 255.0
-                        import cv2 as _cv2
-                        gradcam_for_features = _cv2.resize(cam_gray, (image_size, image_size),
-                                                           interpolation=_cv2.INTER_LINEAR)
-    except Exception as exc:
-        classifier_results['_error'] = f'classifier batch failed: {exc}'
+    if seg_only_mode:
+        classifier_results['_disabled'] = (
+            'classifiers disabled by env CLASSIFIERS_DISABLE_USE_SEG_ONLY=1; '
+            'verdict derived from v8 segmentation alone (75-100% OOD recall '
+            'vs classifier ensemble 0-67%). Re-enable after dataset_v8 '
+            'classifier retraining lands.'
+        )
+    else:
+        try:
+            per_model = predict_image('all', image_bytes)
+            if isinstance(per_model, dict):
+                for name, res in per_model.items():
+                    if not isinstance(res, dict):
+                        continue
+                    classifier_results[name] = {
+                        'probability': res.get('probability'),
+                        'confidence': res.get('confidence'),
+                        'label': res.get('label'),
+                        'display_label': res.get('display_label'),
+                        'weights': res.get('weights'),
+                        'gradcam': res.get('gradcam'),
+                    }
+                    # Use ViT's Grad-CAM if present (the strongest model usually)
+                    # else fall back to whichever has one.
+                    if gradcam_for_features is None and res.get('gradcam'):
+                        cam_rgb = _decode_data_url(res['gradcam'])
+                        if cam_rgb is not None:
+                            # Convert overlay heatmap back to a [0,1] saliency proxy
+                            # by taking max over channels (color intensity).
+                            cam_gray = cam_rgb.max(axis=2).astype(np.float32) / 255.0
+                            import cv2 as _cv2
+                            gradcam_for_features = _cv2.resize(cam_gray, (image_size, image_size),
+                                                               interpolation=_cv2.INTER_LINEAR)
+        except Exception as exc:
+            classifier_results['_error'] = f'classifier batch failed: {exc}'
 
     # --- 2b) Classifier verdict gating ------------------------------------
     # When the classifiers agree on tumor but the joint-trained v5 segmenter

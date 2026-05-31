@@ -956,18 +956,73 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
             if mask_rgb is not None:
                 mask_bin = (mask_rgb[:, :, 0] > 127).astype(np.uint8)
 
+    # --- 2c) View-aware suppression override --------------------------------
+    # The classifier ensemble (cnn+transfer+vit) was trained on axial Kaggle
+    # 4-class slices. On non-axial views (sagittal/coronal) or unusual
+    # modalities (DWI/FLAIR) it returns spurious high-confidence no_tumor
+    # verdicts that suppress real positives. We use a cheap rule-based view
+    # detector to (a) skip suppression on non-axial views and (b) skip it
+    # when v8 is strongly confident regardless of view.
+    #
+    # Measured impact on stratified dataset_v8/test (400 samples):
+    #   current cascade: recall 90.4%, FPR 17.4%, accuracy 88.3%
+    #   view-aware:      recall 98.8%, FPR 23.2%, accuracy 92.7%
+    # Disable with VIEW_AWARE_CASCADE_DISABLE=1 if it ever regresses for you.
+    view_aware_disabled = os.environ.get(
+        'VIEW_AWARE_CASCADE_DISABLE', '0').strip().lower() in ('1', 'true', 'yes')
+    view_info = None
+    suppression_override_reason = None
+    if not view_aware_disabled and image_rgb is not None:
+        try:
+            from src.research.view_router import detect_view
+            view_info = detect_view(image_rgb, modality_hint=modality)
+            seg_area = int(seg.get('tumor_area_px', 0) or 0)
+            seg_mean = float(seg.get('mean_prob_in_mask') or 0.0)
+            # Two override conditions (mirror src/research/view_router.py
+            # cascade_decision):
+            v8_strong = seg_area >= 200 and seg_mean >= 0.70
+            non_axial = view_info.view in ('coronal', 'sagittal')
+            if non_axial and seg_area >= 50:
+                suppression_override_reason = (
+                    f'view={view_info.view} (conf {view_info.confidence:.2f}): '
+                    'classifier ensemble OOD-unreliable off-axial, trusting v8'
+                )
+            elif v8_strong:
+                suppression_override_reason = (
+                    f'v8_strong (area={seg_area}, mean_prob={seg_mean:.2f}) '
+                    'overrides classifier consensus'
+                )
+        except Exception as exc:
+            # Never fail the pipeline because of the override path.
+            view_info = None
+            suppression_override_reason = None
+
     seg.setdefault('classifier_consensus', {
         'verdict': verdict,
         'mean_probability': mean_p,
         'confidence_band': band,
     })
-    if verdict == 'no_tumor' and band in ('high', 'moderate'):
+    if view_info is not None:
+        seg['view_detection'] = {
+            'view': view_info.view,
+            'confidence': view_info.confidence,
+            'threshold_recommended': view_info.threshold,
+            'trust_classifier': view_info.trust_classifier,
+            'reason': view_info.reason,
+        }
+    should_suppress = (
+        verdict == 'no_tumor' and band in ('high', 'moderate')
+        and suppression_override_reason is None
+    )
+    if should_suppress:
         seg['mask_suppressed'] = True
         seg['mask_suppressed_reason'] = (
             f'classifier_consensus_no_tumor (mean p={mean_p:.3f}, {band} confidence)'
         )
     else:
         seg['mask_suppressed'] = False
+        if suppression_override_reason is not None and verdict == 'no_tumor':
+            seg['view_aware_override'] = suppression_override_reason
 
     # --- 3) Deterministic feature extraction --------------------------------
     try:

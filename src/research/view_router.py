@@ -168,4 +168,38 @@ def cascade_decision(*, seg_max_prob: float, seg_area_at_view_thresh: int,
             ('no_tumor', f'v8_negative_mixed_classifier'))
 
 
-__all__ = ['detect_view', 'cascade_decision', 'ViewPolicy', 'POLICY']
+def confidence_tier(*, seg_max_prob: float, seg_area_at_view_thresh: int,
+                     classifier_mean_p: Optional[float]) -> str:
+    """3-tier confidence for a TUMOR-labelled prediction.
+
+    Returns 'high' (definitive tumor) or 'requires_review' (possible tumor,
+    flag for human radiologist).
+
+    Rule derived from confidence_band_analysis.py over 272 TUMOR-predicted
+    samples (ID + OOD combined):
+      - seg_max         AUC = 0.906 for TP-vs-FP separation
+      - clf_mean        AUC = 0.800
+      - seg_max+clf_mean AUC = 0.941 (combined)
+
+    The chosen rule flags 76% of false positives while only flagging 8% of
+    true positives — a ~10x more accurate way of saying "I don't know":
+
+        requires_review iff:
+            seg_max < 0.75
+            OR (clf_mean < 0.30 AND seg_area < 200)
+
+    UI impact: in the dashboard a 'requires_review' verdict produces an
+    amber banner ("Possible finding — human review recommended") instead
+    of the red "TUMOR detected" banner, while keeping the segmentation
+    overlay visible for the reviewer.
+    """
+    cm = classifier_mean_p if classifier_mean_p is not None else -1.0
+    low_seg = seg_max_prob < 0.75
+    weak_classifier_and_small = cm < 0.30 and seg_area_at_view_thresh < 200
+    if low_seg or weak_classifier_and_small:
+        return 'requires_review'
+    return 'high'
+
+
+__all__ = ['detect_view', 'cascade_decision', 'confidence_tier',
+            'ViewPolicy', 'POLICY']

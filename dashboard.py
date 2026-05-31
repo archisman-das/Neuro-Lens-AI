@@ -610,6 +610,10 @@ def _segment_one(image_bytes, threshold: float, modality: str | None):
         'overlay': _encode_png(overlay),
         'tumor_area_px': tumor_area_px,
         'mean_prob_in_mask': mean_prob,
+        # Image-wide max probability — confidence_tier() in
+        # src/research/view_router uses this as the strongest TP-vs-FP
+        # separator (AUC ~0.91 measured on ID + OOD).
+        'max_prob_in_image': float(probs.max()),
         'dice': None,
         'iou': None,
     }
@@ -1023,6 +1027,37 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
         seg['mask_suppressed'] = False
         if suppression_override_reason is not None and verdict == 'no_tumor':
             seg['view_aware_override'] = suppression_override_reason
+
+    # --- 2d) Confidence tier on POSITIVE predictions ----------------------
+    # When the mask is non-empty (i.e. cascade is calling tumor) we use
+    # the calibrated confidence rule from src/research/view_router to
+    # split TUMOR into:
+    #   high              -> definitive (red banner in UI)
+    #   requires_review   -> possible finding (amber banner; segmentation
+    #                        overlay still shown for the reviewer)
+    # Rule catches ~76% of FPs while only flagging ~8% of TPs.
+    # Skip when mask is suppressed or empty (nothing to tier).
+    if not view_aware_disabled and not seg.get('mask_suppressed', False):
+        seg_area_total = int(seg.get('tumor_area_px', 0) or 0)
+        if seg_area_total >= 50:
+            try:
+                from src.research.view_router import confidence_tier
+                tier = confidence_tier(
+                    seg_max_prob=float(seg.get('max_prob_in_image') or 0.0),
+                    seg_area_at_view_thresh=seg_area_total,
+                    classifier_mean_p=mean_p,
+                )
+                seg['confidence_tier'] = tier
+                if tier == 'requires_review':
+                    seg['requires_human_review'] = True
+                    seg['requires_human_review_reason'] = (
+                        'low_confidence_positive: seg_max < 0.75 or '
+                        '(clf_mean < 0.30 and small mask). 76% of false '
+                        'positives fall into this band; flagged so a '
+                        'radiologist can confirm before treating as tumor.'
+                    )
+            except Exception:
+                pass
 
     # --- 3) Deterministic feature extraction --------------------------------
     try:

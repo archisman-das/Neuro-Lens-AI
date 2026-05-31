@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from src.research.view_router import (
-    detect_view, cascade_decision, ViewPolicy, POLICY,
+    detect_view, cascade_decision, confidence_tier, ViewPolicy, POLICY,
 )
 
 
@@ -151,3 +151,56 @@ def test_no_foreground_image_returns_unknown():
     p = detect_view(img)
     assert p.view == 'unknown'
     assert p.confidence == 0.0
+
+
+# ----------------- confidence_tier tests ---------------------------------
+
+def test_tier_high_when_strong_seg_and_strong_classifier():
+    t = confidence_tier(seg_max_prob=0.95, seg_area_at_view_thresh=2000,
+                         classifier_mean_p=0.80)
+    assert t == 'high'
+
+
+def test_tier_review_when_seg_max_below_threshold():
+    # The dominant rule: seg_max < 0.75 -> review regardless of other signals
+    t = confidence_tier(seg_max_prob=0.50, seg_area_at_view_thresh=2000,
+                         classifier_mean_p=0.90)
+    assert t == 'requires_review'
+
+
+def test_tier_review_when_weak_classifier_and_small_mask():
+    # Even with seg_max above 0.75, weak classifier + small mask -> review
+    t = confidence_tier(seg_max_prob=0.80, seg_area_at_view_thresh=100,
+                         classifier_mean_p=0.10)
+    assert t == 'requires_review'
+
+
+def test_tier_high_when_classifier_weak_but_mask_large():
+    # Large mask rescues the prediction even if classifier is weak
+    t = confidence_tier(seg_max_prob=0.85, seg_area_at_view_thresh=500,
+                         classifier_mean_p=0.10)
+    assert t == 'high'
+
+
+def test_tier_high_when_classifier_strong_even_with_small_mask():
+    # Strong classifier + strong seg -> high regardless of mask size
+    t = confidence_tier(seg_max_prob=0.80, seg_area_at_view_thresh=80,
+                         classifier_mean_p=0.60)
+    assert t == 'high'
+
+
+def test_tier_review_with_no_classifier_signal():
+    # Missing classifier_mean_p shouldn't crash the tiering
+    t = confidence_tier(seg_max_prob=0.60, seg_area_at_view_thresh=300,
+                         classifier_mean_p=None)
+    assert t == 'requires_review'   # seg_max < 0.75 -> review
+
+
+def test_tier_boundary_at_seg_max_0_75():
+    # exactly 0.75 -> high (rule is strict <)
+    t_at = confidence_tier(seg_max_prob=0.75, seg_area_at_view_thresh=500,
+                            classifier_mean_p=0.50)
+    t_below = confidence_tier(seg_max_prob=0.749, seg_area_at_view_thresh=500,
+                                classifier_mean_p=0.50)
+    assert t_at == 'high'
+    assert t_below == 'requires_review'

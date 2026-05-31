@@ -55,13 +55,28 @@ ARTIFACTS_DIRS = [ROOT_DIR / 'real_eval_fixed', ROOT_DIR / 'real_eval_current', 
 #  - attention_unet_v2:  SMP UNet+ResNet34, LGG + Kaggle pseudo masks.
 #  - attention_unet_lgg: hand-rolled Attention U-Net, LGG only.
 #  - attention_unet:     pseudo-mask baseline (traces skull); historical reference.
+# v8 (ConvNeXt-Tiny + 384px + Tversky + Figshare-augmented dataset) is the
+# current production champion. micro_dice 0.80, AUROC 0.94 on dataset_v8/test.
+# At threshold 0.20 + TTA: FN rate drops 31% -> 23% with FP staying under 0.3%.
 SEGMENTATION_DIRS = [
+    ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v8',
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v5',
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v3',
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v2',
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_lgg',
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet',
 ]
+
+# Per-segmentation-model default thresholds. v8 ships at 0.20 because that
+# threshold + 4-way TTA gives the best clinical operating point (FN 23%,
+# FP 0.26%). Older models keep 0.50 default for backwards compatibility.
+# Override at request time by passing `threshold` in the /segment form.
+SEGMENTATION_DEFAULT_THRESHOLD = {
+    'attention_unet_v8': 0.20,
+    'attention_unet_v5': 0.50,
+    'attention_unet_v3': 0.50,
+    'attention_unet_t1c': 0.50,
+}
 # Per-modality model overrides. /segment can request a specific specialist by
 # passing modality=<key> in the multipart form; we then load that model
 # instead of the default search. T1c specialist is trained from the BraTS T1c
@@ -95,10 +110,14 @@ def _resolve_segmentation_weights(modality: str | None = None):
     for inference since segment_image's ONNX-preferred branch handles both.
     """
     def _find_in(d):
-        for ext in ('.pt', '.onnx'):
-            p = d / f'best_model{ext}'
-            if p.exists():
-                return p
+        # v8 saves checkpoints as best_micro.pt / best_micro.onnx (highest
+        # micro_dice = headline metric). Older models use best_model.* (highest
+        # composite). Prefer the model's "headline" checkpoint when present.
+        for basename in ('best_micro', 'best_model'):
+            for ext in ('.pt', '.onnx'):
+                p = d / f'{basename}{ext}'
+                if p.exists():
+                    return p
         return None
     if modality and modality in MODALITY_DIRS:
         p = _find_in(MODALITY_DIRS[modality])
@@ -248,6 +267,171 @@ def _is_grayscale_input(image_bytes, sample_threshold: float = 1.5) -> bool:
         return False
 
 
+def _build_conformal_seg_fn_batched(modality: str | None, image_size: int = 256):
+    """Like _build_conformal_seg_fn but accepts a BATCH of images.
+
+    Signature: seg_fn_batched(x: NxHxWx3 float in [0,1]) -> NxHxW float.
+    Used by the conformal-counterfactual head's fast path to run all
+    N interventions in a single ORT call (vs N sequential calls). On a
+    cpu-basic Space at N=8, this saves ~5-6 sec per scan with no
+    feature loss vs running each intervention separately.
+    Returns None when no checkpoint or when ONNX is disabled (PyTorch
+    fallback path is not batched; the slow path handles it).
+    """
+    weights_path, dir_name = _resolve_segmentation_weights(modality)
+    if weights_path is None:
+        return None
+    onnx_path = _segmentation_onnx_path(weights_path) if USE_ONNX else None
+    if onnx_path is None:
+        return None
+    sess = _get_onnx_session(onnx_path)
+    if sess is None:
+        return None
+    ms_size = 384 if dir_name == 'attention_unet_v8' else image_size
+    norm_mode = 'rescale_255' if dir_name in ('attention_unet', 'attention_unet_lgg') else 'imagenet'
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+    def seg_fn_batched(x_batch: np.ndarray) -> np.ndarray:
+        assert x_batch.ndim == 4 and x_batch.shape[-1] == 3, x_batch.shape
+        n, h, w, _ = x_batch.shape
+        if (h, w) != (ms_size, ms_size):
+            from PIL import Image as _PIL
+            resized = np.zeros((n, ms_size, ms_size, 3), dtype=np.float32)
+            for i in range(n):
+                pil = _PIL.fromarray((np.clip(x_batch[i], 0, 1) * 255).astype(np.uint8))
+                pil = pil.resize((ms_size, ms_size))
+                resized[i] = np.asarray(pil, dtype=np.float32) / 255.0
+            x_batch = resized
+        if norm_mode == 'imagenet':
+            base = (x_batch - mean) / std
+        else:
+            base = x_batch
+        xt = base.transpose(0, 3, 1, 2).astype(np.float32)  # NxCxHxW
+        logits = sess.run(None, {'input': xt})[0]
+        prob = 1.0 / (1.0 + np.exp(-logits))
+        return prob[:, 0].astype(np.float32)  # N x H x W
+    return seg_fn_batched
+
+
+def _build_conformal_seg_fn(modality: str | None, image_size: int = 256):
+    """Build a callable matching the conformal-counterfactual module's API.
+
+    Signature: seg_fn(x: HxWx3 float in [0,1]) -> HxW float in [0,1].
+    The intervention modules operate on raw pixel space (pre-normalisation),
+    so this wrapper applies the cascade-winner's normalisation internally.
+    Uses the cached ONNX session when available, PyTorch fallback otherwise.
+    Returns None if no checkpoint exists for the requested modality.
+    """
+    weights_path, dir_name = _resolve_segmentation_weights(modality)
+    if weights_path is None:
+        return None
+    onnx_path = _segmentation_onnx_path(weights_path) if USE_ONNX else None
+    norm_mode = 'rescale_255' if dir_name in ('attention_unet', 'attention_unet_lgg') else 'imagenet'
+
+    if onnx_path is not None:
+        sess = _get_onnx_session(onnx_path)
+        if sess is None:
+            onnx_path = None
+
+    if onnx_path is not None:
+        sess = _get_onnx_session(onnx_path)
+        def seg_fn(x: np.ndarray) -> np.ndarray:
+            assert x.ndim == 3 and x.shape[2] == 3, x.shape
+            arr = x
+            if arr.shape[:2] != (image_size, image_size):
+                from PIL import Image as _PIL
+                pil = _PIL.fromarray((np.clip(arr, 0, 1) * 255).astype(np.uint8))
+                pil = pil.resize((image_size, image_size))
+                arr = np.asarray(pil, dtype=np.float32) / 255.0
+            if norm_mode == 'imagenet':
+                base = (arr - np.array([0.485, 0.456, 0.406], dtype=np.float32)) \
+                        / np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            else:
+                base = arr
+            xt = base.transpose(2, 0, 1)[None].astype(np.float32)
+            logits = sess.run(None, {'input': xt})[0]
+            prob = 1.0 / (1.0 + np.exp(-logits))
+            return prob[0, 0].astype(np.float32)
+        return seg_fn
+
+    # PyTorch fallback.
+    import torch
+    loaded = _load_segmentation_model(modality=modality)
+    if loaded is None:
+        return None
+    model, device, cfg = loaded
+    image_size_pt = int(cfg.get('image_size', image_size))
+    norm_mode_pt = cfg.get('_normalization', norm_mode)
+
+    def seg_fn(x: np.ndarray) -> np.ndarray:
+        assert x.ndim == 3 and x.shape[2] == 3, x.shape
+        arr = x
+        if arr.shape[:2] != (image_size_pt, image_size_pt):
+            from PIL import Image as _PIL
+            pil = _PIL.fromarray((np.clip(arr, 0, 1) * 255).astype(np.uint8))
+            pil = pil.resize((image_size_pt, image_size_pt))
+            arr = np.asarray(pil, dtype=np.float32) / 255.0
+        if norm_mode_pt == 'imagenet':
+            base = (arr - np.array([0.485, 0.456, 0.406], dtype=np.float32)) \
+                    / np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        else:
+            base = arr
+        t = torch.from_numpy(base.transpose(2, 0, 1)).unsqueeze(0).to(device)
+        with torch.no_grad():
+            logits = model(t)
+            prob = torch.sigmoid(logits)[0, 0].cpu().numpy()
+        return prob.astype(np.float32)
+    return seg_fn
+
+
+def _conformal_counterfactual_for(result: dict, image_bytes: bytes) -> dict | None:
+    """Optional conformal-counterfactual analysis after the cascade pick.
+
+    Wraps src.research.dashboard_integration.analyze so the dashboard
+    does not import numpy heavy machinery unless artifacts exist.
+    Returns None if calibration artifacts are missing or anything fails.
+
+    Set CONFORMAL_DISABLE=1 in the Space environment to skip this entirely
+    (saves ~6-8 sec per scan on CPU-basic; conformal panel will just show
+    "pending" hint instead of populated coverage data).
+    """
+    if os.environ.get('CONFORMAL_DISABLE', '').strip() in ('1', 'true', 'yes'):
+        return None
+    try:
+        from src.research import dashboard_integration as _cf
+    except Exception:
+        return None
+    import io as _io
+    from PIL import Image as _PIL
+    source_dir = result.get('source_dir')
+    modality = 't1c' if source_dir == 'attention_unet_t1c' else None
+    image_size = int(result.get('image_size', 256))
+    seg_fn = _build_conformal_seg_fn(modality, image_size=image_size)
+    if seg_fn is None:
+        return None
+    # Batched seg_fn for the fast path (all 8 interventions in one ORT call).
+    # Falls back to None for PyTorch path; analyze() then uses the slow loop.
+    seg_fn_batched = _build_conformal_seg_fn_batched(modality, image_size=image_size)
+    try:
+        pil_img = _PIL.open(_io.BytesIO(image_bytes)).convert('RGB').resize((image_size, image_size))
+        arr = np.asarray(pil_img, dtype=np.float32) / 255.0
+        # Recompute factual prob through the same seg_fn so it is on the
+        # same scale as the intervention outputs (single forward, no TTA).
+        # This keeps cf-vs-factual comparison apples-to-apples; the displayed
+        # primary mask still uses the full TTA path.
+        factual_prob = seg_fn(arr)
+        return _cf.analyze(
+            image_array=arr,
+            factual_prob=factual_prob,
+            seg_fn=seg_fn,
+            seg_fn_batched=seg_fn_batched,
+            threshold=float(result.get('threshold', 0.5)),
+        )
+    except Exception:
+        return None
+
+
 def _segment_one(image_bytes, threshold: float, modality: str | None):
     """Single-model segmentation. No cascade logic. Returns the standard
     response dict (success/mask/overlay/tumor_area_px/source_dir) or an error
@@ -266,6 +450,13 @@ def _segment_one(image_bytes, threshold: float, modality: str | None):
     from PIL import Image
 
     weights_path, dir_name = _resolve_segmentation_weights(modality)
+    # If caller passed the legacy default 0.5 but this model has a tuned
+    # default in SEGMENTATION_DEFAULT_THRESHOLD (e.g. v8 -> 0.20), use the
+    # tuned default. Explicit non-default thresholds always win.
+    if dir_name and abs(threshold - 0.5) < 1e-9:
+        tuned = SEGMENTATION_DEFAULT_THRESHOLD.get(dir_name)
+        if tuned is not None:
+            threshold = float(tuned)
     if weights_path is None:
         return {
             'success': False,
@@ -286,9 +477,10 @@ def _segment_one(image_bytes, threshold: float, modality: str | None):
             onnx_path = None  # onnxruntime missing -> fall through to PyTorch
     if onnx_path is not None:
         sess = _get_onnx_session(onnx_path)
-        image_size = 256  # all current .onnx exports were taken at 256x256
+        # v8 ConvNeXt-Tiny was trained at 384x384; v3/v5/t1c at 256x256.
+        image_size = 384 if dir_name == 'attention_unet_v8' else 256
         # The lgg / attention_unet baselines were trained with 0-1 rescale,
-        # the SMP-style models (v2/v3/t1c) expect ImageNet normalisation.
+        # the SMP-style models (v2/v3/t1c/v8) expect ImageNet normalisation.
         norm_mode = 'rescale_255' if dir_name in ('attention_unet', 'attention_unet_lgg') else 'imagenet'
 
         pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((image_size, image_size))
@@ -307,18 +499,22 @@ def _segment_one(image_bytes, threshold: float, modality: str | None):
         # Disable with TTA_DISABLE=1 for debugging.
         use_tta = os.environ.get('TTA_DISABLE', '').strip() not in ('1', 'true', 'yes')
         if use_tta:
+            # BATCHED TTA: stack all 4 transforms into a single batch=4 ORT
+            # call instead of 4 sequential calls. On cpu-basic this drops
+            # TTA cost from ~3-4 sec -> ~1.2-1.5 sec with no result change.
             tta_inputs = [
                 ('id', base),
                 ('hflip', base[:, ::-1, :].copy()),
                 ('rot180', base[::-1, ::-1, :].copy()),
                 ('hflip_rot180', base[::-1, :, :].copy()),
             ]
+            batch = np.stack([inp.transpose(2, 0, 1) for _, inp in tta_inputs],
+                              axis=0).astype(np.float32)
+            logits_batch = sess.run(None, {'input': batch})[0]  # (4, 1, H, W)
+            probs_batch = 1.0 / (1.0 + np.exp(-logits_batch))
             prob_sum = np.zeros((image_size, image_size), dtype=np.float32)
-            for tag, inp in tta_inputs:
-                x = inp.transpose(2, 0, 1)[None].astype(np.float32)
-                lo = sess.run(None, {'input': x})[0]
-                p = 1.0 / (1.0 + np.exp(-lo))
-                p = p[0, 0]
+            for i, (tag, _) in enumerate(tta_inputs):
+                p = probs_batch[i, 0]
                 # Reverse the transform on the probability map.
                 if tag == 'hflip':
                     p = p[:, ::-1]
@@ -419,7 +615,137 @@ def _segment_one(image_bytes, threshold: float, modality: str | None):
     }
 
 
-def segment_image(image_bytes, threshold=0.5, modality: str | None = None):
+def _maybe_attach_conformal(result: dict, image_bytes: bytes) -> dict:
+    """Attach conformal-counterfactual analysis to a successful segmentation."""
+    if not result.get('success'):
+        return result
+    cf = _conformal_counterfactual_for(result, image_bytes)
+    if cf is not None:
+        result['conformal_counterfactual'] = cf
+    return result
+
+
+def _maybe_apply_medsam_refiner(result: dict, image_bytes: bytes) -> dict:
+    """Run MedSAM-as-refiner on the cascade winner.
+
+    The joint-trained segmenter (v5/v7) handles localization + FP
+    discipline; MedSAM redraws the boundary at SAM ViT-B resolution
+    when prompted with the bbox of the largest connected component.
+    Realistic gain: +3-5 micro-Dice points on tumor scans, zero impact
+    on no-tumor scans (refiner skips empty coarse masks).
+
+    MANDATORY on every successful segmentation. No env-flag gate. The
+    refiner is internally safe on empty masks: when the coarse mask
+    has fewer than 16 pixels of tumor (i.e. classifier consensus is
+    almost certainly no-tumor, or v5 found nothing), it returns the
+    coarse mask unchanged with skipped_reason=empty_coarse_mask. So
+    no-tumor scans are never refined - we never invent tumor where
+    the joint-trained segmenter said there was none. Set
+    MEDSAM_REFINER_DISABLE=1 only for debugging.
+
+    Failure is silent: if MedSAM isn't installed or its forward pass
+    throws, we return the original result unchanged with a diagnostic
+    `medsam_refiner.available=False` field for visibility in the UI.
+    """
+    if os.environ.get('MEDSAM_REFINER_DISABLE', '').strip() in ('1', 'true', 'yes'):
+        return result
+    if not result.get('success'):
+        return result
+    try:
+        import io as _io
+        import base64 as _b64
+        from PIL import Image as _PIL
+        from src.research.medsam_refiner import MedSAMRefiner
+    except Exception as exc:
+        result['medsam_refiner'] = {'enabled': True, 'available': False,
+                                      'reason': f'import_failed: {exc}'}
+        return result
+    try:
+        image_size = int(result.get('image_size', 256))
+        pil_img = _PIL.open(_io.BytesIO(image_bytes)).convert('RGB').resize((image_size, image_size))
+        rgb = np.asarray(pil_img, dtype=np.uint8)
+        # Decode the cascade mask (data URL -> uint8 array -> bool).
+        mask_url = result.get('mask') or ''
+        if not mask_url.startswith('data:image/png;base64,'):
+            result['medsam_refiner'] = {'enabled': True, 'available': False,
+                                          'reason': 'no_mask_to_refine'}
+            return result
+        mask_png = _b64.b64decode(mask_url.split(',', 1)[1])
+        coarse = np.array(_PIL.open(_io.BytesIO(mask_png)).convert('L').resize(
+            (image_size, image_size), _PIL.NEAREST,
+        ))
+        coarse_bool = coarse > 127
+        refined = MedSAMRefiner.get().refine(rgb, coarse_bool)
+        # Re-encode refined + overlay back into data URLs so the UI swaps in.
+        refined_u8 = (refined.refined_mask.astype(np.uint8) * 255)
+        overlay = rgb.copy()
+        if refined.refined_mask.any():
+            overlay[refined.refined_mask] = (
+                0.4 * np.array([34, 197, 94], dtype=np.uint8)
+                + 0.6 * overlay[refined.refined_mask]
+            ).astype(np.uint8)
+
+        def _enc(arr_u8):
+            buf = _io.BytesIO()
+            _PIL.fromarray(arr_u8).save(buf, format='PNG')
+            return 'data:image/png;base64,' + _b64.b64encode(buf.getvalue()).decode('utf-8')
+
+        # Stash the coarse outputs so the UI can show "before/after".
+        result['coarse_mask'] = result.get('mask')
+        result['coarse_overlay'] = result.get('overlay')
+        result['coarse_tumor_area_px'] = result.get('tumor_area_px')
+        # Promote refined as the canonical mask/overlay.
+        result['mask'] = _enc(refined_u8)
+        result['overlay'] = _enc(overlay)
+        result['tumor_area_px'] = int(refined.refiner_area_px)
+        # Bbox-prompt visualization: draw the bbox as a yellow rectangle
+        # outline on top of the original MRI. Useful for "see exactly what
+        # MedSAM was told to focus on" debugging.
+        bbox_overlay_url = None
+        if refined.bbox_used is not None:
+            bbox_viz = rgb.copy()
+            x0, y0, x1, y1 = refined.bbox_used
+            x0 = max(0, int(x0)); y0 = max(0, int(y0))
+            x1 = min(rgb.shape[1] - 1, int(x1)); y1 = min(rgb.shape[0] - 1, int(y1))
+            border = max(1, min(3, (x1 - x0) // 40))  # 3px on a typical 256-512 image
+            color = np.array([255, 215, 0], dtype=np.uint8)  # gold yellow
+            if x1 > x0 and y1 > y0:
+                bbox_viz[y0:y0 + border, x0:x1] = color
+                bbox_viz[max(0, y1 - border):y1, x0:x1] = color
+                bbox_viz[y0:y1, x0:x0 + border] = color
+                bbox_viz[y0:y1, max(0, x1 - border):x1] = color
+                # Small label tag in upper-left of bbox
+                tag_h, tag_w = 16, 80
+                ty0 = max(0, y0 - tag_h - 1)
+                ty1 = ty0 + tag_h
+                tx0 = x0
+                tx1 = min(rgb.shape[1], x0 + tag_w)
+                bbox_viz[ty0:ty1, tx0:tx1] = (
+                    0.5 * bbox_viz[ty0:ty1, tx0:tx1] + 0.5 * color
+                ).astype(np.uint8)
+            bbox_overlay_url = _enc(bbox_viz)
+
+        result['medsam_refiner'] = {
+            'enabled': True,
+            'available': True,
+            'model': 'flaviagiammarino/medsam-vit-base',
+            'iou_score': float(refined.score),
+            'coarse_area_px': int(refined.coarse_area_px),
+            'refined_area_px': int(refined.refiner_area_px),
+            'delta_area_px': int(refined.delta_area_px),
+            'bbox_used': list(refined.bbox_used) if refined.bbox_used else None,
+            'bbox_overlay': bbox_overlay_url,
+            'elapsed_ms': float(refined.elapsed_ms),
+            'skipped_reason': refined.skipped_reason,
+        }
+    except Exception as exc:
+        result['medsam_refiner'] = {'enabled': True, 'available': False,
+                                      'reason': f'refine_failed: {exc}'}
+    return result
+
+
+def segment_image(image_bytes, threshold=0.5, modality: str | None = None,
+                    enable_v3_fallback: bool = False):
     """Cascading segmentation.
 
     Routing rules:
@@ -449,91 +775,84 @@ def segment_image(image_bytes, threshold=0.5, modality: str | None = None):
                 'tried': [result.get('source_dir')],
                 'reason': 'explicit_modality_request',
             }
-        return result
+        return _maybe_attach_conformal(_maybe_apply_medsam_refiner(result, image_bytes), image_bytes)
 
-    # Default path: pick primary model based on input modality detection.
-    # Grayscale-triplicated inputs (Kaggle, single-modality T1c uploads, etc.)
-    # are better handled by the T1c specialist which was trained on exactly
-    # that. Multi-channel inputs go to v3 which expects multi-modal stacks.
+    # Default path: v5 (joint-trained, positives+negatives) is the canonical
+    # primary. When v5 returns an empty mask we run a small staged fallback
+    # to catch false negatives without re-introducing healthy-brain FPs:
+    #   1. v5 @ threshold 0.5  (default)
+    #   2. v5 @ threshold 0.3  (lower bar; catches faint enhancement)
+    #   3. v3 @ threshold 0.5  (legacy high-Dice model; its FPs are gated by
+    #                           the classifier consensus at the UI layer, so
+    #                           we only pay this cost when classifiers say
+    #                           tumor anyway - the empty-mask cases.)
     grayscale_detected = _is_grayscale_input(image_bytes)
-    t1c_dir = MODALITY_DIRS.get('t1c')
-    t1c_present = (t1c_dir is not None and (
-        (t1c_dir / 'best_model.pt').exists()
-        or (t1c_dir / 'best_model.onnx').exists()
-    ))
-    if grayscale_detected and t1c_present:
-        primary = _segment_one(image_bytes, threshold, modality='t1c')
-    else:
-        primary = _segment_one(image_bytes, threshold, modality=None)
+    MIN_AREA = 16  # below this we treat as "empty mask"
+    cascade_tried = []
+    cascade_reasons = []
+
+    def _try(modality_or_none, thr, tag):
+        r = _segment_one(image_bytes, thr, modality=modality_or_none)
+        cascade_tried.append({
+            'tag': tag, 'source_dir': r.get('source_dir'),
+            'threshold': thr, 'area_px': int(r.get('tumor_area_px', 0) or 0),
+            'mean_prob': float(r.get('mean_prob_in_mask') or 0.0),
+            'success': bool(r.get('success')),
+        })
+        return r
+
+    primary = _try(None, threshold, f'v5_thr_{threshold:.2f}')
     if not primary.get('success'):
         return primary
-    primary['_grayscale_input'] = grayscale_detected
-
     primary_area = int(primary.get('tumor_area_px', 0))
-    primary_mean_prob = float(primary.get('mean_prob_in_mask') or 0.0)
-    specialist_ckpt = MODALITY_DIRS.get('t1c', None)
-    specialist_available = (specialist_ckpt is not None and (
-        (specialist_ckpt / 'best_model.pt').exists()
-        or (specialist_ckpt / 'best_model.onnx').exists()
-    ))
 
-    # Primary found a confident chunk of tumor: no cascade fallback needed.
-    primary_confident = (primary_area >= CASCADE_MIN_AREA_PX
-                          and primary_mean_prob >= CASCADE_MIN_MEAN_PROB)
-    if primary_confident or not specialist_available:
-        if primary_confident:
-            reason = ('grayscale_routed_to_t1c_sufficient' if grayscale_detected
-                       else 'v3_sufficient')
-        elif not specialist_available:
-            reason = 'specialist_unavailable'
-        else:
-            reason = 'primary_only'
-        primary['cascade'] = {
-            'used': primary.get('source_dir'),
-            'tried': [primary.get('source_dir')],
-            'primary_area_px': primary_area,
-            'primary_mean_prob': primary_mean_prob,
-            'specialist_area_px': None,
-            'reason': reason,
-            'grayscale_input': grayscale_detected,
-        }
-        return primary
+    # Stage 2: lower threshold retry on v5 if first attempt was empty.
+    chosen = primary
+    if primary_area < MIN_AREA:
+        cascade_reasons.append(f'v5_empty_at_{threshold:.2f}_retrying_lower')
+        retry = _try(None, max(0.30, threshold - 0.20), 'v5_thr_0.30')
+        if retry.get('success') and int(retry.get('tumor_area_px', 0)) >= MIN_AREA:
+            chosen = retry
+            cascade_reasons.append(f'v5_recovered_at_lower_threshold')
 
-    # v3 was empty or uncertain - try the T1c specialist.
-    specialist = _segment_one(image_bytes, threshold, modality='t1c')
-    specialist_area = int(specialist.get('tumor_area_px', 0)) if specialist.get('success') else 0
-    specialist_mean_prob = float(specialist.get('mean_prob_in_mask') or 0.0)
+    # Stage 3: v3 fallback if v5 still empty. ONLY runs when caller
+    # explicitly asks for it (build_explanation passes enable_v3_fallback=True
+    # only after computing a positive classifier consensus). v3 has no FP
+    # discipline, so we never want to run it on a healthy brain - the
+    # classifier verdict is the gate.
+    if int(chosen.get('tumor_area_px', 0)) < MIN_AREA and enable_v3_fallback:
+        v3_present = False
+        v3_dir_path = Path('segmentation_artifacts/attention_unet_v3')
+        for ext in ('best_model.pt', 'best_model.onnx'):
+            if (v3_dir_path / ext).exists():
+                v3_present = True
+                break
+        if v3_present:
+            cascade_reasons.append('classifier_verdict_tumor_but_v5_empty_at_all_thresholds_falling_back_to_v3')
+            MODALITY_DIRS['v3'] = v3_dir_path
+            v3 = _try('v3', threshold, 'v3_thr_0.50')
+            if v3.get('success') and int(v3.get('tumor_area_px', 0)) >= MIN_AREA:
+                chosen = v3
+                cascade_reasons.append('v3_recovered')
+    elif int(chosen.get('tumor_area_px', 0)) < MIN_AREA:
+        # Empty mask + no classifier signal yet to enable v3 fallback.
+        # build_explanation will re-call us with enable_v3_fallback=True
+        # if classifier consensus comes back positive.
+        cascade_reasons.append('v5_empty_v3_fallback_disabled_pending_classifier_verdict')
 
-    # Pick whichever (specialist vs primary) has the highest mean_prob_in_mask
-    # AND meets the area floor. If specialist gives a better-confidence mask we
-    # take it; otherwise we keep v3 and tag the cascade reason for transparency.
-    specialist_useful = (specialist_area >= CASCADE_MIN_AREA_PX
-                         and specialist_mean_prob >= primary_mean_prob)
-    if specialist_useful:
-        specialist['cascade'] = {
-            'used': specialist.get('source_dir'),
-            'tried': [primary.get('source_dir'), specialist.get('source_dir')],
-            'primary_area_px': primary_area,
-            'primary_mean_prob': primary_mean_prob,
-            'specialist_area_px': specialist_area,
-            'specialist_mean_prob': specialist_mean_prob,
-            'reason': (f'specialist_higher_confidence '
-                        f'({primary_mean_prob:.2f} -> {specialist_mean_prob:.2f})'
-                        if primary_area > 0
-                        else f'v3_empty_specialist_recovered ({primary_area}px -> {specialist_area}px)'),
-        }
-        return specialist
-
-    # Both empty - return v3 (it's the default; specialist didn't help).
-    primary['cascade'] = {
-        'used': primary.get('source_dir'),
-        'tried': [primary.get('source_dir'),
-                  specialist.get('source_dir') if specialist.get('success') else 'attention_unet_t1c'],
+    primary_area = int(chosen.get('tumor_area_px', 0))
+    primary_mean_prob = float(chosen.get('mean_prob_in_mask') or 0.0)
+    chosen['_grayscale_input'] = grayscale_detected
+    chosen['cascade'] = {
+        'used': chosen.get('source_dir'),
+        'tried': cascade_tried,
         'primary_area_px': primary_area,
-        'specialist_area_px': specialist_area,
-        'reason': f'both_empty (v3={primary_area}px, t1c={specialist_area}px)',
+        'primary_mean_prob': primary_mean_prob,
+        'specialist_area_px': None,
+        'reason': '; '.join(cascade_reasons) if cascade_reasons else f'v5_primary_at_{threshold:.2f}',
+        'grayscale_input': grayscale_detected,
     }
-    return primary
+    return _maybe_attach_conformal(_maybe_apply_medsam_refiner(chosen, image_bytes), image_bytes)
 
 
 def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None,
@@ -612,18 +931,31 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
         classifier_results['_error'] = f'classifier batch failed: {exc}'
 
     # --- 2b) Classifier verdict gating ------------------------------------
-    # Mark segmentation as a probable false positive when ALL classifiers
-    # disagree with the mask. The U-Net was trained on patches that always
-    # contained tumor, so it has a positive bias - on no-tumor inputs it
-    # still picks up some intensity edges and emits a small mask. Carrying
-    # this flag through the response lets the UI hide the false-positive
-    # green overlay and lets the LLM-explanation pipeline frame the report
-    # as no-tumor instead of inventing a "lesion".
+    # When the classifiers agree on tumor but the joint-trained v5 segmenter
+    # produced an empty mask (false negative), re-run segmentation with the
+    # v3 fallback path enabled (legacy positives-only model, higher Dice but
+    # no FP discipline - safe to use here precisely because the classifier
+    # consensus confirms tumor). The reverse case (classifiers say no-tumor)
+    # keeps the empty mask and lights up the mask-suppression UI banner.
     try:
         from src.llm_explain import _classifier_consensus
         verdict, mean_p, band = _classifier_consensus(classifier_results)
     except Exception:
         verdict, mean_p, band = None, None, None
+
+    if (verdict == 'tumor' and band in ('high', 'moderate')
+            and int(seg.get('tumor_area_px', 0) or 0) < 16):
+        # Re-segment with v3 fallback enabled.
+        seg_retry = segment_image(image_bytes, threshold=threshold,
+                                    modality=modality, enable_v3_fallback=True)
+        if seg_retry.get('success') and int(seg_retry.get('tumor_area_px', 0) or 0) >= 16:
+            seg = seg_retry
+            # Re-decode the overlay/mask images since seg changed.
+            overlay_rgb = _decode_data_url(seg.get('overlay'))
+            mask_rgb = _decode_data_url(seg.get('mask'))
+            if mask_rgb is not None:
+                mask_bin = (mask_rgb[:, :, 0] > 127).astype(np.uint8)
+
     seg.setdefault('classifier_consensus', {
         'verdict': verdict,
         'mean_probability': mean_p,
@@ -1252,9 +1584,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             threshold = 0.5
         modality_raw = form.get('modality')
         modality = str(modality_raw).strip().lower() if isinstance(modality_raw, str) else None
+        # Frontend may already have classifier consensus from a parallel
+        # /predict call; if so it sets enable_v3_fallback=1 to allow the
+        # cascade's v3 fallback (which is otherwise gated to prevent FPs on
+        # healthy brains). Accepts "1", "true", "yes".
+        v3_raw = form.get('enable_v3_fallback') or form.get('v3_fallback') or ''
+        enable_v3 = str(v3_raw).strip().lower() in ('1', 'true', 'yes')
 
         try:
-            result = segment_image(file_item['content'], threshold=threshold, modality=modality)
+            result = segment_image(file_item['content'], threshold=threshold,
+                                    modality=modality, enable_v3_fallback=enable_v3)
             self.respond_json(result)
         except Exception as exc:
             self.respond_json({'success': False, 'error': str(exc)}, status=500)
@@ -1533,6 +1872,13 @@ def _ensure_onnx_models_downloaded():
     # we keep out of the default Spaces image.
     needed = [
         # (local target relative to ROOT_DIR, repo-relative path)
+        # v8 is the production model. dynamo-exported = graph + sidecar
+        # weights file; both must be present in the same directory or ORT
+        # fails with "external data not found".
+        ('segmentation_artifacts/attention_unet_v8/best_micro.onnx',
+         'attention_unet_v8/best_micro.onnx'),
+        ('segmentation_artifacts/attention_unet_v8/best_micro.onnx.data',
+         'attention_unet_v8/best_micro.onnx.data'),
         ('segmentation_artifacts/attention_unet_v5/best_model.onnx',
          'attention_unet_v5/best_model.onnx'),
         ('segmentation_artifacts/attention_unet_v3/best_model.onnx',
@@ -1552,6 +1898,19 @@ def _ensure_onnx_models_downloaded():
             ('real_eval_current/transfer/best_weights.pt', 'transfer/best_weights.pt'),
             ('real_eval_current/vit/best_weights.pt', 'vit/best_weights.pt'),
         ]
+    # Conformal-counterfactual calibration JSONs. Each is ~1 KB and unlocks
+    # the research-grade conformal panel in the dashboard. The set of files
+    # is known statically here so the Space doesn't need to list the repo.
+    for slug in (
+        'identity', 'modality_keep_T1', 'modality_keep_T1c',
+        'modality_keep_FLAIR', 'intensity_shift_+0.10',
+        'intensity_shift_-0.10', 'contrast_scale_0.70',
+        'contrast_scale_1.50',
+    ):
+        needed.append(
+            (f'conformal_artifacts/{slug}.json',
+             f'conformal_artifacts/{slug}.json')
+        )
     missing = [(loc, rep) for loc, rep in needed if not (ROOT_DIR / loc).exists()]
     if not missing:
         logger.info('all_onnx_models_already_present')

@@ -38,12 +38,19 @@ import torch  # noqa: E402
 
 CLASSIFIER_NAMES = ['cnn', 'transfer', 'vit']
 SEGMENTATION_DIRS = [
+    'attention_unet_v5',
     'attention_unet_v3',
     'attention_unet_t1c',
     'attention_unet_v2',
     'attention_unet_lgg',
     'attention_unet',
 ]
+
+# Segmentation checkpoints that store a bare state_dict (no architecture
+# metadata). Map dir_name -> SMP encoder so we can rebuild the wrapper.
+BARE_STATE_DICT_DIRS = {
+    'attention_unet_v5': 'resnet34',  # train_segmentation_v5.py: SMP UNet + ResNet34
+}
 
 
 def _classifier_paths(name: str) -> tuple[Path, Path] | None:
@@ -74,6 +81,22 @@ def _load_classifier(name: str, ckpt_path: Path, device: torch.device):
 
 def _load_segmentation(ckpt_path: Path, device: torch.device):
     state = torch.load(str(ckpt_path), map_location=device, weights_only=False)
+    # Bare state-dict checkpoints (v5+): no wrapper dict, just a tensor map.
+    # The dir name disambiguates which SMP encoder was used.
+    if isinstance(state, dict) and 'state_dict' not in state and 'architecture' not in state:
+        dir_name = ckpt_path.parent.name
+        encoder = BARE_STATE_DICT_DIRS.get(dir_name)
+        if encoder is None:
+            raise RuntimeError(
+                f"bare state_dict checkpoint at {ckpt_path} has no architecture "
+                f"metadata and {dir_name} is not in BARE_STATE_DICT_DIRS"
+            )
+        import segmentation_models_pytorch as smp
+        model = smp.Unet(encoder_name=encoder, encoder_weights=None,
+                          in_channels=3, classes=1).to(device)
+        model.load_state_dict(state, strict=True)
+        model.eval()
+        return model
     arch = state.get('architecture')
     encoder = state.get('encoder')
     if arch and encoder:

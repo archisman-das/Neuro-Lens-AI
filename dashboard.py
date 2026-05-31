@@ -1288,6 +1288,33 @@ def predict_image(model_name, image_bytes):
     if model_name not in MODEL_TYPES and model_name != 'all':
         raise ValueError('Unknown model selected.')
 
+    # Kill-switch: when CLASSIFIERS_DISABLE_USE_SEG_ONLY=1, the 3-classifier
+    # ensemble was measured at recall=0-67% on OOD data (see
+    # scripts/eval_ood_classifiers_brutal.py) — worse than v8 segmentation
+    # which has 75-100% OOD recall on the same samples. Until v8-retrained
+    # classifiers with diverse negative class ship, return a 'disabled'
+    # payload that the UI can render as "classifier ensemble OFF (verdict
+    # from segmentation only)" rather than show misleading classifier
+    # outputs that contradict the segmenter.
+    if os.environ.get('CLASSIFIERS_DISABLE_USE_SEG_ONLY', '0').strip().lower() in ('1', 'true', 'yes'):
+        disabled_payload = {
+            'probability': None,
+            'confidence': None,
+            'label': 'disabled',
+            'display_label': 'Classifier disabled (segmentation-only mode)',
+            'weights': 'disabled',
+            'gradcam': None,
+            '_disabled': True,
+            '_disabled_reason': (
+                'Classifier ensemble OOD recall 0-67% vs v8 segmentation 75-100%. '
+                'Disabled by env CLASSIFIERS_DISABLE_USE_SEG_ONLY=1 until v8-retrained '
+                'classifiers with diverse negative class ship.'
+            ),
+        }
+        if model_name == 'all':
+            return {n: dict(disabled_payload) for n in MODEL_TYPES}
+        return disabled_payload
+
     if model_name == 'all':
         results = {}
         for name in MODEL_TYPES:

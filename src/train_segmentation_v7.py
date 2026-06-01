@@ -279,20 +279,16 @@ def _evaluate_with_micro(model, loader, device, threshold: float = 0.5,
 # Training loop
 # -----------------------------------------------------------------------
 
-def _atomic_save(payload: dict, path: Path) -> None:
-    """Write `payload` to `path` atomically via tmp+rename.
-
-    Critical for crash-safe checkpointing: a hard kill (or kernel-power 41)
-    in the middle of torch.save can corrupt the file. Writing to a tmp file
-    and renaming makes the operation atomic on Windows and POSIX - the
-    target either has the old contents or the complete new contents,
-    never a half-written file.
-    """
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    torch.save(payload, tmp)
-    if path.exists():
-        path.unlink()
-    tmp.rename(path)
+# _atomic_save was moved to src/checkpoint_utils.py on 2026-06-02 so it
+# can be reused by v9b training without pulling in the v5+v7 trainer
+# chain. Re-exported here for backwards-compat with any caller that did
+# `from src.train_segmentation_v7 import _atomic_save`.
+try:
+    from .checkpoint_utils import atomic_save as _atomic_save  # type: ignore
+except ImportError:  # support `python src/train_segmentation_v7.py` as a script
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from src.checkpoint_utils import atomic_save as _atomic_save  # type: ignore
 
 
 def _save_checkpoint(out: Path, name: str, *, model, optimizer, epoch: int,

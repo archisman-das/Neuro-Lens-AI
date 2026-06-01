@@ -16,12 +16,12 @@ from PIL import Image
 import numpy as np
 
 try:
-    from .train_segmentation_v7 import _atomic_save  # type: ignore
+    from .checkpoint_utils import atomic_save as _atomic_save  # type: ignore
     from .research.jepa import IJEPAModel, make_jepa_masks  # type: ignore
 except ImportError:
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from src.train_segmentation_v7 import _atomic_save  # type: ignore
+    from src.checkpoint_utils import atomic_save as _atomic_save  # type: ignore
     from src.research.jepa import IJEPAModel, make_jepa_masks  # type: ignore
 
 

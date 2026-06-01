@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 try:
-    from .train_segmentation_v7 import _atomic_save  # type: ignore
+    from .checkpoint_utils import atomic_save as _atomic_save  # type: ignore
     from .train_v9b_stage1_jepa import HealthyOnlyDataset  # type: ignore
     from .research.jepa import IJEPAModel  # type: ignore
     from .research.latent_diffusion_decoder import LatentConditionedDDPM  # type: ignore
@@ -28,7 +28,7 @@ try:
 except ImportError:
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from src.train_segmentation_v7 import _atomic_save  # type: ignore
+    from src.checkpoint_utils import atomic_save as _atomic_save  # type: ignore
     from src.train_v9b_stage1_jepa import HealthyOnlyDataset  # type: ignore
     from src.research.jepa import IJEPAModel  # type: ignore
     from src.research.latent_diffusion_decoder import LatentConditionedDDPM  # type: ignore

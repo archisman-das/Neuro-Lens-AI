@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NeuroLens AI - Advanced Brain Tumor Detection</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=cf6">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -460,10 +460,125 @@
                     </div>
                 </div>
 
+                <!-- Conformal Counterfactual Analysis (novel research head, Gap B) -->
+                <div id="conformalCfHero" style="display:none; margin:20px 0; padding:20px; border-radius:14px; background:linear-gradient(135deg, rgba(99,102,241,0.10) 0%, rgba(168,85,247,0.10) 100%); border:1.5px solid rgba(139,92,246,0.45); box-shadow:0 4px 18px rgba(99,102,241,0.10);">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; margin-bottom:12px;">
+                        <div>
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#8b5cf6;"></span>
+                                <h3 style="margin:0; font-size:17px; color:#6d28d9;">Conformal Counterfactual Analysis</h3>
+                                <span style="font-size:10px; font-weight:700; letter-spacing:0.5px; padding:2px 8px; border-radius:10px; background:#8b5cf6; color:white;">NOVEL</span>
+                            </div>
+                            <p style="margin:6px 0 0; font-size:13px; opacity:0.85;">
+                                Per-voxel prediction sets with a provable (1 - &alpha;) coverage guarantee under causal interventions
+                                on the scanner protocol. Combines CONSeg-style conformal segmentation with CausalX-Net-style
+                                counterfactuals via weighted conformal prediction (Tibshirani et al. 2019). First unified
+                                framework for brain tumor MRI.
+                            </p>
+                        </div>
+                        <span id="conformalCfMethod" style="font-size:11px; opacity:0.7; white-space:nowrap;">weighted-conformal-CF</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:12px; margin-bottom:12px;">
+                        <div style="padding:10px 12px; background:rgba(255,255,255,0.6); border-radius:8px;">
+                            <div style="font-size:11px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Coverage target</div>
+                            <div style="font-size:18px; font-weight:700; color:#6d28d9;" id="conformalCfCoverage">--</div>
+                        </div>
+                        <div style="padding:10px 12px; background:rgba(255,255,255,0.6); border-radius:8px;">
+                            <div style="font-size:11px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Interventions</div>
+                            <div style="font-size:18px; font-weight:700; color:#6d28d9;" id="conformalCfNiv">--</div>
+                        </div>
+                        <div style="padding:10px 12px; background:rgba(255,255,255,0.6); border-radius:8px;">
+                            <div style="font-size:11px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Most-disagreeing</div>
+                            <div style="font-size:13px; font-weight:600; color:#6d28d9;" id="conformalCfMaxDis">--</div>
+                        </div>
+                        <div style="padding:10px 12px; background:rgba(255,255,255,0.6); border-radius:8px;">
+                            <div style="font-size:11px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Most-robust</div>
+                            <div style="font-size:13px; font-weight:600; color:#6d28d9;" id="conformalCfMostRobust">--</div>
+                        </div>
+                    </div>
+                    <details>
+                        <summary style="cursor:pointer; font-size:13px; font-weight:600; color:#6d28d9;">Per-intervention table (q, abstain %, certified disagree %)</summary>
+                        <div style="overflow-x:auto; margin-top:10px;">
+                            <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                                <thead>
+                                    <tr style="background:rgba(139,92,246,0.10);">
+                                        <th style="text-align:left; padding:6px 10px;">Intervention</th>
+                                        <th style="text-align:right; padding:6px 10px;">q</th>
+                                        <th style="text-align:right; padding:6px 10px;">Abstain %</th>
+                                        <th style="text-align:right; padding:6px 10px;">Cert. disagree %</th>
+                                        <th style="text-align:right; padding:6px 10px;">CF area px</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="conformalCfTbody"></tbody>
+                            </table>
+                        </div>
+                    </details>
+                </div>
+                <!-- Visible by default so the user always sees the research head is present.
+                     JS hides it only when the purple hero panel (above) has real conformal data. -->
+                <!-- MedSAM cascade refiner (Ma et al. Nat Commun 2024). Mandatory on every
+                     positive scan; skips empty masks to preserve FP discipline. -->
+                <div id="medsamPanel" style="display:none; margin:16px 0; padding:18px 22px; border-radius:14px; background:linear-gradient(135deg, rgba(34,197,94,0.10) 0%, rgba(20,184,166,0.10) 100%); border:1.5px solid rgba(34,197,94,0.45); box-shadow:0 4px 18px rgba(34,197,94,0.10);">
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+                        <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#16a34a;"></span>
+                        <h3 style="margin:0; font-size:17px; color:#15803d;">MedSAM Boundary Refiner</h3>
+                        <span style="font-size:10px; font-weight:700; letter-spacing:0.5px; padding:2px 8px; border-radius:10px; background:#16a34a; color:white;">CASCADE</span>
+                        <span id="medsamStatus" style="font-size:11px; opacity:0.7; margin-left:auto;">--</span>
+                    </div>
+                    <p style="margin:0 0 10px; font-size:13px; opacity:0.85;">
+                        Ma et al. <em>Nature Communications</em> 2024. SAM ViT-B finetuned on 1.5M medical
+                        image-mask pairs incl. BraTS. Re-draws the segmentation boundary at high resolution
+                        when prompted with the joint-trained segmenter's bbox. <strong>Mandatory on every
+                        positive scan;</strong> empty/no-tumor masks are passed through unchanged.
+                    </p>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
+                        <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Coarse area</div>
+                            <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamCoarse">--</div>
+                        </div>
+                        <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Refined area</div>
+                            <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamRefined">--</div>
+                        </div>
+                        <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">&Delta;</div>
+                            <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamDelta">--</div>
+                        </div>
+                        <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">IoU score</div>
+                            <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamIou">--</div>
+                        </div>
+                        <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Latency</div>
+                            <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamMs">--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="conformalCfMissingHint" style="margin:16px 0; padding:16px 20px; border-radius:12px; background:linear-gradient(135deg, rgba(245,158,11,0.10) 0%, rgba(168,85,247,0.10) 100%); border:1.5px dashed #8b5cf6; font-size:13px;">
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+                        <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#8b5cf6;"></span>
+                        <strong style="color:#6d28d9;">Conformal Counterfactual Analysis</strong>
+                        <span style="font-size:10px; font-weight:700; letter-spacing:0.5px; padding:2px 8px; border-radius:10px; background:#8b5cf6; color:white;">NOVEL · RESEARCH HEAD</span>
+                    </div>
+                    <p style="margin:6px 0 0; opacity:0.85;">
+                        Novel research module (Gap B): voxelwise prediction sets with provable (1 - &alpha;)
+                        coverage guarantee under causal interventions on the scanner protocol. Combines
+                        CONSeg + CausalX-Net via weighted conformal prediction. <br>
+                        <span style="opacity:0.7;">Awaiting first analysis with calibration artifacts.
+                        If you see this after running an analysis, the artifacts are still downloading from the model repo
+                        (cold-start ~60s); refresh and re-analyse to pull the populated panel.</span>
+                    </p>
+                </div>
+
                 <!-- Detailed Results -->
                 <div class="results-grid">
-                    <!-- Model Comparison -->
-                    <div class="results-panel">
+                    <!-- Model Performance Comparison REMOVED 2026-06-01:
+                         classifier ensemble (CNN/Transfer/ViT) was deprecated
+                         after OOD recall capped at 25-47%. Verdict now from
+                         v8 segmentation alone. Panel hidden but kept in DOM
+                         in case anything else queries comparisonContent. -->
+                    <div class="results-panel" id="modelComparisonPanel" style="display:none !important;">
                         <div class="panel-header">
                             <h3>Model Performance Comparison</h3>
                             <div class="panel-tabs">
@@ -496,12 +611,17 @@
                     <div class="results-panel">
                         <div class="panel-header">
                             <h3>Visualization</h3>
-                            <div class="viz-tabs">
+                            <div class="viz-tabs" style="flex-wrap:wrap; gap:6px; max-width:100%;">
                                 <button class="tab-btn active" data-view="original">Original</button>
-                                <button class="tab-btn" data-view="heatmap">Grad-CAM</button>
-                                <button class="tab-btn" data-view="overlay">Grad-CAM Overlay</button>
-                                <button class="tab-btn" data-view="mask">U-Net Mask</button>
-                                <button class="tab-btn" data-view="segoverlay">U-Net Overlay</button>
+                                <!-- Grad-CAM tabs REMOVED 2026-06-01: depended on classifier
+                                     autograd, classifier ensemble deprecated. -->
+                                <button class="tab-btn" data-view="heatmap" style="display:none !important;">Grad-CAM</button>
+                                <button class="tab-btn" data-view="overlay" style="display:none !important;">Grad-CAM Overlay</button>
+                                <button class="tab-btn" data-view="mask" title="MedSAM-refined mask (final, what radiologists see)">Refined Mask</button>
+                                <button class="tab-btn" data-view="segoverlay" title="MedSAM-refined overlay (final, what radiologists see)">Refined Overlay</button>
+                                <button class="tab-btn" data-view="coarse_mask" title="Raw v5 mask before MedSAM refinement">Coarse Mask</button>
+                                <button class="tab-btn" data-view="coarse_overlay" title="Raw v5 overlay before MedSAM refinement">Coarse Overlay</button>
+                                <button class="tab-btn" data-view="bbox_prompt" title="Yellow rectangle = exactly what region MedSAM was prompted to focus on">MedSAM Bbox</button>
                             </div>
                         </div>
                         <div class="panel-content">
@@ -510,16 +630,22 @@
                                 <img id="vizImage" src="" alt="Visualization">
                                 <img id="heatmapImage" src="" alt="Heatmap" style="display: none;">
                                 <img id="overlayImage" src="" alt="Overlay" style="display: none;">
-                                <img id="maskImage" src="" alt="U-Net Mask" style="display: none; background: black;">
-                                <img id="segoverlayImage" src="" alt="U-Net Overlay" style="display: none;">
+                                <img id="maskImage" src="" alt="Refined Mask (MedSAM)" style="display: none; background: black;">
+                                <img id="segoverlayImage" src="" alt="Refined Overlay (MedSAM)" style="display: none;">
+                                <img id="coarseMaskImage" src="" alt="Coarse Mask (v5)" style="display: none; background: black;">
+                                <img id="coarseOverlayImage" src="" alt="Coarse Overlay (v5)" style="display: none;">
+                                <img id="bboxPromptImage" src="" alt="MedSAM Bbox Prompt" style="display: none;">
                                 <div id="vizPlaceholder" class="viz-placeholder" style="display:none;"></div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Reliability metrics derived from the 3-classifier ensemble -->
-                <div class="additional-analysis">
+                <!-- Reliability metrics derived from the 3-classifier ensemble
+                     — HIDDEN 2026-06-01 along with the classifier ensemble.
+                     Epistemic uncertainty was std-across-classifiers; with the
+                     ensemble gone there's nothing meaningful to compute here. -->
+                <div class="additional-analysis" id="additionalAnalysisPanel" style="display:none !important;">
                     <div class="analysis-card">
                         <h4>Uncertainty Analysis</h4>
                         <div class="uncertainty-stats">
@@ -569,6 +695,8 @@
                         </dl>
                     </div>
                 </div>
+
+                <!-- (Conformal panel moved to top of results section above as conformalCfHero) -->
 
                 <!-- AI Radiology Report (LLM-generated, hallucination-checked) -->
                 <div class="report-section">
@@ -769,8 +897,8 @@
                                 <p id="explainRecommendation">--</p>
                             </div>
 
-                            <!-- Model agreement -->
-                            <div class="explain-section">
+                            <!-- Classifier Agreement REMOVED 2026-06-01 along with the ensemble. -->
+                            <div class="explain-section" style="display:none !important;">
                                 <h4>Classifier Agreement</h4>
                                 <p id="explainAgreement">--</p>
                             </div>
@@ -1127,6 +1255,6 @@
         </div>
     </footer>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=cf6"></script>
 </body>
 </html>

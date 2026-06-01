@@ -30,6 +30,7 @@ import sys
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
@@ -57,8 +58,6 @@ class MaskDerivedClassificationDataset(Dataset):
 
     def __init__(self, split_dir: Path, image_size: int = IMAGE_SIZE,
                  normalize_imagenet: bool = False, train: bool = True):
-        import cv2
-        self.cv2 = cv2
         self.image_size = image_size
         self.normalize_imagenet = normalize_imagenet
         self.train = train
@@ -75,7 +74,7 @@ class MaskDerivedClassificationDataset(Dataset):
             mask_path = self.masks_dir / img_path.name
             if not mask_path.exists():
                 continue
-            m = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            m = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)  # noqa: F811
             label = 1.0 if int((m > 127).sum()) >= MIN_TUMOR_AREA else 0.0
             entries.append((img_path, label))
             if label == 1.0: n_tum += 1
@@ -92,12 +91,12 @@ class MaskDerivedClassificationDataset(Dataset):
 
     def __getitem__(self, idx):
         path, label = self.entries[idx]
-        img = self.cv2.imread(str(path))
+        img = cv2.imread(str(path))
         if img is None:
             raise RuntimeError(f'failed to read {path}')
-        img = self.cv2.cvtColor(img, self.cv2.COLOR_BGR2RGB)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         if img.shape[0] != self.image_size or img.shape[1] != self.image_size:
-            img = self.cv2.resize(img, (self.image_size, self.image_size))
+            img = cv2.resize(img, (self.image_size, self.image_size))
         if self.train and np.random.rand() < 0.5:
             img = np.ascontiguousarray(img[:, ::-1])
         img = img.astype(np.float32) / 255.0
@@ -139,15 +138,31 @@ def evaluate(model: nn.Module, loader: DataLoader, device, threshold: float = 0.
 
 
 def export_onnx(model: nn.Module, save_path: Path, device):
+    """Export to ONNX. Redirects the exporter's emoji-heavy stdout/stderr
+    into an in-memory StringIO so it never hits the parent process's
+    cp1252 console (which would crash on the success checkmark)."""
+    import io
+    import contextlib
     model.eval()
     dummy = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE, device=device)
-    torch.onnx.export(
-        model, dummy, str(save_path),
-        input_names=['input'], output_names=['output'],
-        dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}},
-        opset_version=14,
-    )
-    print(f'        -> exported ONNX: {save_path} ({save_path.stat().st_size/1e6:.1f} MB)')
+    buf = io.StringIO()
+    ok = False
+    err: Exception | None = None
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            torch.onnx.export(
+                model, dummy, str(save_path),
+                input_names=['input'], output_names=['output'],
+                dynamic_axes={'input': {0: 'batch'}, 'output': {0: 'batch'}},
+                opset_version=17,
+            )
+        ok = True
+    except Exception as exc:
+        err = exc
+    if ok:
+        print(f'        -> exported ONNX: {save_path} ({save_path.stat().st_size/1e6:.1f} MB)')
+    else:
+        print(f'        ONNX export failed (continuing): {type(err).__name__}: {err}')
 
 
 def train_one(model_name: str, args) -> dict:
@@ -177,6 +192,16 @@ def train_one(model_name: str, args) -> dict:
                                   lr=args.learning_rate)
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
 
+    # Compute pos_weight to balance the BCE loss against class imbalance.
+    # pos_weight = n_neg / n_pos. When pos_weight < 1 we downweight the
+    # majority (positives, after OpenNeuro augmentation); when > 1 we
+    # upweight the minority. Without this the previous round learned a
+    # positive bias and false-alarmed on all OOD healthy brains.
+    pw = float(train_ds.n_no_tumor) / max(train_ds.n_tumor, 1)
+    pw_tensor = torch.tensor([pw], device=device, dtype=torch.float32)
+    print(f'[{model_name}] pos_weight = n_neg/n_pos = '
+          f'{train_ds.n_no_tumor}/{train_ds.n_tumor} = {pw:.4f}', flush=True)
+
     out_dir = ROOT / args.output / model_name
     out_dir.mkdir(parents=True, exist_ok=True)
     best_path = out_dir / 'best_weights.pt'
@@ -198,7 +223,7 @@ def train_one(model_name: str, args) -> dict:
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
                 logits = model(x).squeeze(-1)
-                loss = F.binary_cross_entropy_with_logits(logits, y)
+                loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=pw_tensor)
             if device.type == 'cuda':
                 scaler.scale(loss).backward(); scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)

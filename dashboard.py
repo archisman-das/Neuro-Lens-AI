@@ -943,22 +943,25 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
         except Exception:
             view_info = None
 
-    # --- 2b+) v9b Tier-2 advisory (symmetry + v8 ensemble) ----------------
-    # Rewritten 2026-06-02 after the 148-sample OOD eval revealed that
-    # the previous JEPA-only path had AUC = 0.564 (was 0.857 on
-    # undersized 48-sample bench — sampling artifact). New default:
-    # deterministic symmetry score (AUC 0.65, < 0.1s) combined with
-    # v8 mask area at the selected operating point.
+    # --- 2b+) v9b Tier-2 advisory (v9c + v8 + symmetry ensemble) ----------
+    # Rewritten 2026-06-03 after v9c (frozen DINOv2-base + trained JEPA
+    # predictor head) hit AUC = 0.925 on the 246-sample expanded OOD
+    # bench. New default ensemble: (v9c OR v8) AND symmetry, measured at
+    # 94% recall / 11% FPR / 0.72 F1 — high-recall by clinical-safety
+    # design (missing a tumor is far worse than flagging a healthy scan
+    # that a reviewer can rule out).
     #
-    # JEPA + DDPM stays available behind V9B_HEAVY=1 for research use,
-    # but is OFF by default in production (5s GPU / 60s CPU latency
-    # for an AUC bump that didn't survive cohort expansion).
+    # Operating points (V9B_OPERATING_POINT env var, default = high_recall):
+    #   high_recall      - 94% recall / 11% FPR  (v9c OR v8) AND symmetry
+    #   balanced         - 89% recall /  9% FPR  2-of-3 vote
+    #   high_specificity - 60% recall /  0% FPR  (v9c OR sym) AND v8
+    # All measured on samples/ood/eval_v9c_ensemble_inputs.csv (n=246,
+    # 36 tumor / 210 healthy, LOSO-valid on Navoneel).
     #
-    # Operating point selected by V9B_OPERATING_POINT env var:
-    #   high_recall      - 85% recall / 31% FPR  (default)
-    #   balanced         - 65% recall / 12% FPR
-    #   high_specificity - 30% recall /  0% FPR  (zero FPs)
-    # All measured on samples/ood/eval_v9b_symmetry_expanded.csv (n=148).
+    # v9c is opt-in via V9C_ENABLE=1 (requires DINOv2 weights ~340 MB,
+    # see V9C_DOWNLOAD=1 for HF fetch). Without v9c the advisory falls
+    # back to v8 AND symmetry — same ensemble logic, conservative rule.
+    # Legacy v9b JEPA+DDPM stays behind V9B_HEAVY=1 for research only.
     if image_rgb is not None:
         try:
             from src.research.v9b_advisory import compute_advisory
@@ -966,6 +969,21 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
             v9b = compute_advisory(image_rgb, v8_area_px=v8_area_px)
             if v9b is not None:
                 seg['v9b_advisory'] = v9b
+                # Safety-first escalation: if the v9c+symmetry advisory
+                # caught a TUMOR that v8 alone (the top-level verdict)
+                # missed, OR if the advisory's positive is low-confidence
+                # at high_recall, raise the review flag so the radiologist
+                # examines this case even when v8 stays clean. We never
+                # silently overturn v8 — both verdicts are returned — but
+                # we make sure the human sees a flag.
+                v8_says_tumor = v8_area_px >= 50
+                adv_says_tumor = v9b.get('verdict') == 'TUMOR'
+                if adv_says_tumor and (not v8_says_tumor or v9b.get('review_recommended')):
+                    seg['requires_human_review'] = True
+                    seg.setdefault('requires_human_review_reason',
+                        f'v9b advisory ({v9b.get("rule", "ensemble")}) flagged TUMOR '
+                        f'with {v9b.get("confidence", "low")} confidence — radiologist review '
+                        f'recommended to rule out FP at high_recall operating point.')
         except Exception as exc:
             seg['v9b_advisory'] = {'enabled': False, 'reason': f'wire-up failed: {exc}'}
 
@@ -1599,6 +1617,15 @@ def _ensure_onnx_models_downloaded():
             (f'conformal_artifacts/{slug}.json',
              f'conformal_artifacts/{slug}.json')
         )
+    # v9c JEPA-on-DINOv2 predictor weights (136 MB) — opt-in, only fetched
+    # when V9C_DOWNLOAD=1 because the file is large and the v9c path is
+    # itself opt-in via V9C_ENABLE=1. On CPU-basic Spaces the v9c inference
+    # is too slow to run anyway (~6s/req); cpu-upgrade or GPU-backed Spaces
+    # should set both V9C_DOWNLOAD=1 and V9C_ENABLE=1 to activate the
+    # high-recall ensemble.
+    if os.environ.get('V9C_DOWNLOAD', '0').strip().lower() in ('1', 'true', 'yes'):
+        needed.append(('v9b_artifacts/v9c_stage1/last.pt',
+                        'v9c_stage1/last.pt'))
     missing = [(loc, rep) for loc, rep in needed if not (ROOT_DIR / loc).exists()]
     if not missing:
         logger.info('all_onnx_models_already_present')

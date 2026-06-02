@@ -943,6 +943,23 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
         except Exception:
             view_info = None
 
+    # --- 2b+) v9b Tier-2 advisory (normative JEPA + DDPM) -----------------
+    # Optional second-opinion via the v9b research pipeline. Disabled by
+    # default (V9B_ENABLE=1 to opt in) because each call takes ~5s on GPU
+    # and ~60s on CPU — fine for local dev with a GPU, not for the public
+    # Space's cpu-basic tier.
+    # Shipped operating point (from scripts/eval_ood_ensemble.py Pareto
+    # frontier): JEPA OR DDPM @ (J>0.427, D>2.018) measured 89% recall
+    # / 17% FPR on the 48-sample OOD bench.
+    if image_rgb is not None:
+        try:
+            from src.research.v9b_advisory import compute_advisory
+            v9b = compute_advisory(image_rgb, run_ddpm=True)
+            if v9b is not None:
+                seg['v9b_advisory'] = v9b
+        except Exception as exc:
+            seg['v9b_advisory'] = {'enabled': False, 'reason': f'wire-up failed: {exc}'}
+
     # Mask is never suppressed in seg-only mode. If v8 produced a mask,
     # we show it. Production verdict = does mask have >=50 px.
     seg['mask_suppressed'] = False

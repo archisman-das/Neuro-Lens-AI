@@ -33,22 +33,27 @@ BUNDLE_FILES = [
 SRC_FILES = [
     'src/__init__.py',
     'src/utils.py',
-    'src/checkpoint_utils.py',       # NEW: minimal stdlib+torch, replaces
-                                     # the v7 _atomic_save dependency that
-                                     # used to drag in v5+v7 trainers.
+    'src/checkpoint_utils.py',
     'src/train_v9b_stage1_jepa.py',
     'src/train_v9b_stage2.py',
+    'src/train_v9b_andi_ddpm.py',     # NEW (June 2026): proper ANDi
+                                       # DDPM training with pyramidal noise.
     'src/v9b_inference.py',
     'src/research/__init__.py',
     'src/research/jepa.py',
     'src/research/jepa_conformal.py',
     'src/research/latent_diffusion_decoder.py',
     'src/research/sdf_geometric_tower.py',
+    'src/research/symmetry_geometry.py',  # NEW: deterministic symmetry
+                                          # geometry score, replaces SDF.
+    'src/research/pyramidal_noise.py',    # NEW: ANDi pyramidal noise gen.
+    'src/research/andi_inference.py',     # NEW: ANDi inference aggregation.
     'src/research/two_tower_anomaly.py',
     'src/research/geometric_prior.py',
     'src/research/mesh_extraction.py',
     'src/research/mni152_registration.py',
     'src/research/v9b_model.py',
+    'src/research/v9b_advisory.py',       # NEW: end-to-end advisory wrapper.
 ]
 
 

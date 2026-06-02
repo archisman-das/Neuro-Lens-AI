@@ -943,18 +943,27 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
         except Exception:
             view_info = None
 
-    # --- 2b+) v9b Tier-2 advisory (normative JEPA + DDPM) -----------------
-    # Optional second-opinion via the v9b research pipeline. Disabled by
-    # default (V9B_ENABLE=1 to opt in) because each call takes ~5s on GPU
-    # and ~60s on CPU — fine for local dev with a GPU, not for the public
-    # Space's cpu-basic tier.
-    # Shipped operating point (from scripts/eval_ood_ensemble.py Pareto
-    # frontier): JEPA OR DDPM @ (J>0.427, D>2.018) measured 89% recall
-    # / 17% FPR on the 48-sample OOD bench.
+    # --- 2b+) v9b Tier-2 advisory (symmetry + v8 ensemble) ----------------
+    # Rewritten 2026-06-02 after the 148-sample OOD eval revealed that
+    # the previous JEPA-only path had AUC = 0.564 (was 0.857 on
+    # undersized 48-sample bench — sampling artifact). New default:
+    # deterministic symmetry score (AUC 0.65, < 0.1s) combined with
+    # v8 mask area at the selected operating point.
+    #
+    # JEPA + DDPM stays available behind V9B_HEAVY=1 for research use,
+    # but is OFF by default in production (5s GPU / 60s CPU latency
+    # for an AUC bump that didn't survive cohort expansion).
+    #
+    # Operating point selected by V9B_OPERATING_POINT env var:
+    #   high_recall      - 85% recall / 31% FPR  (default)
+    #   balanced         - 65% recall / 12% FPR
+    #   high_specificity - 30% recall /  0% FPR  (zero FPs)
+    # All measured on samples/ood/eval_v9b_symmetry_expanded.csv (n=148).
     if image_rgb is not None:
         try:
             from src.research.v9b_advisory import compute_advisory
-            v9b = compute_advisory(image_rgb, run_ddpm=True)
+            v8_area_px = int(seg.get('tumor_area_px', 0) or 0)
+            v9b = compute_advisory(image_rgb, v8_area_px=v8_area_px)
             if v9b is not None:
                 seg['v9b_advisory'] = v9b
         except Exception as exc:

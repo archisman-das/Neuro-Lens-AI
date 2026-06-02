@@ -38,6 +38,8 @@ SRC_FILES = [
     'src/train_v9b_stage2.py',
     'src/train_v9b_andi_ddpm.py',     # NEW (June 2026): proper ANDi
                                        # DDPM training with pyramidal noise.
+    'src/train_v9c_stage1.py',        # NEW (June 2026): v9c JEPA predictor
+                                       # on frozen DINOv2 backbone.
     'src/v9b_inference.py',
     'src/research/__init__.py',
     'src/research/jepa.py',
@@ -53,7 +55,9 @@ SRC_FILES = [
     'src/research/mesh_extraction.py',
     'src/research/mni152_registration.py',
     'src/research/v9b_model.py',
-    'src/research/v9b_advisory.py',       # NEW: end-to-end advisory wrapper.
+    'src/research/v9b_advisory.py',       # end-to-end advisory wrapper.
+    'src/research/v9c_dinov2_jepa.py',    # NEW (June 2026): v9c model
+                                          # (frozen DINOv2 + JEPA predictor).
 ]
 
 

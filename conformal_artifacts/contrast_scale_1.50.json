@@ -1,0 +1,31 @@
+{
+  "q": 0.9981905221939087,
+  "alpha": 0.1,
+  "threshold": 0.5,
+  "band_low": 0.3,
+  "band_high": 0.7,
+  "include_positive_in_pool": true,
+  "intervention": {
+    "name": "contrast_scale",
+    "params": {
+      "gamma": 1.5
+    }
+  },
+  "calib_report": {
+    "n_calib": 326,
+    "n_voxels_used": 531332,
+    "alpha": 0.1,
+    "q": 0.9981905221939087,
+    "intervention": {
+      "name": "contrast_scale",
+      "params": {
+        "gamma": 1.5
+      }
+    },
+    "threshold": 0.5,
+    "band_low": 0.3,
+    "band_high": 0.7,
+    "weighted": false,
+    "empirical_coverage_on_calib": 0.9000022584749272
+  }
+}

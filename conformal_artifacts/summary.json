@@ -1,0 +1,62 @@
+{
+  "alpha": 0.1,
+  "n_calib": 326,
+  "interventions": [
+    {
+      "slug": "identity",
+      "path": "conformal_artifacts\\identity.json",
+      "q": 0.9966663122177124,
+      "empirical_coverage": 0.900002824459822,
+      "n_voxels": 531075
+    },
+    {
+      "slug": "modality_keep_T1",
+      "path": "conformal_artifacts\\modality_keep_T1.json",
+      "q": 0.997071385383606,
+      "empirical_coverage": 0.9000048945230287,
+      "n_voxels": 531206
+    },
+    {
+      "slug": "modality_keep_T1c",
+      "path": "conformal_artifacts\\modality_keep_T1c.json",
+      "q": 0.9968782663345337,
+      "empirical_coverage": 0.9000033837257828,
+      "n_voxels": 531958
+    },
+    {
+      "slug": "modality_keep_FLAIR",
+      "path": "conformal_artifacts\\modality_keep_FLAIR.json",
+      "q": 0.9965452551841736,
+      "empirical_coverage": 0.9000026332915768,
+      "n_voxels": 531654
+    },
+    {
+      "slug": "intensity_shift_+0.10",
+      "path": "conformal_artifacts\\intensity_shift_+0.10.json",
+      "q": 0.9967705607414246,
+      "empirical_coverage": 0.9000054620210608,
+      "n_voxels": 530939
+    },
+    {
+      "slug": "intensity_shift_-0.10",
+      "path": "conformal_artifacts\\intensity_shift_-0.10.json",
+      "q": 0.9964340925216675,
+      "empirical_coverage": 0.9000020689486543,
+      "n_voxels": 531671
+    },
+    {
+      "slug": "contrast_scale_0.70",
+      "path": "conformal_artifacts\\contrast_scale_0.70.json",
+      "q": 0.9955471754074097,
+      "empirical_coverage": 0.900002069143243,
+      "n_voxels": 531621
+    },
+    {
+      "slug": "contrast_scale_1.50",
+      "path": "conformal_artifacts\\contrast_scale_1.50.json",
+      "q": 0.9981905221939087,
+      "empirical_coverage": 0.9000022584749272,
+      "n_voxels": 531332
+    }
+  ]
+}

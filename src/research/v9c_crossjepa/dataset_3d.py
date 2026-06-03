@@ -377,29 +377,51 @@ def collate_mod2mod(samples: List[dict]) -> Optional[dict]:
 
 def discover_brats_scans(root: str | Path) -> List[dict]:
     """Walk a BraTS-style directory and group files by patient ID +
-    modality. Returns a list of dicts compatible with Mod2ModDataset.
+    modality. Handles BraTS 2020 / 2021 (underscore-separated, e.g.
+    `_t1.nii.gz`) AND BraTS 2023+ (dash-separated, e.g. `-t1n.nii.gz`).
 
-    Expected layout (BraTS 2020 / 2021):
-        <root>/BraTS20_Training_001/BraTS20_Training_001_t1.nii.gz
-        <root>/BraTS20_Training_001/BraTS20_Training_001_t1ce.nii.gz
-        <root>/BraTS20_Training_001/BraTS20_Training_001_t2.nii.gz
-        <root>/BraTS20_Training_001/BraTS20_Training_001_flair.nii.gz
+    Expected layout examples:
+
+      BraTS 2020/2021 (rocky93/BraTS_segmentation):
+        <root>/BraTS2021_00000/BraTS2021_00000_t1.nii.gz
+        <root>/BraTS2021_00000/BraTS2021_00000_t1ce.nii.gz
+        <root>/BraTS2021_00000/BraTS2021_00000_t2.nii.gz
+        <root>/BraTS2021_00000/BraTS2021_00000_flair.nii.gz
+
+      BraTS 2023 (obi77/brats23-first-10-examples and similar):
+        <root>/BraTS-GLI-00000-000/BraTS-GLI-00000-000-t1n.nii.gz
+        <root>/BraTS-GLI-00000-000/BraTS-GLI-00000-000-t1c.nii.gz
+        <root>/BraTS-GLI-00000-000/BraTS-GLI-00000-000-t2w.nii.gz
+        <root>/BraTS-GLI-00000-000/BraTS-GLI-00000-000-t2f.nii.gz
     """
     root = Path(root)
     out = []
-    suffix_to_modality = {
-        '_t1.nii.gz': 'T1', '_t1ce.nii.gz': 'T1c', '_t1c.nii.gz': 'T1c',
-        '_t2.nii.gz': 'T2', '_flair.nii.gz': 'FLAIR',
-    }
+    # Suffixes ordered most-specific-first to avoid false matches
+    # (e.g. `_t1.nii.gz` should not match `_t1ce.nii.gz`).
+    suffix_to_modality = [
+        # BraTS 2023 (dash-separated short names)
+        ('-t1c.nii.gz', 'T1c'),
+        ('-t1n.nii.gz', 'T1'),
+        ('-t2f.nii.gz', 'FLAIR'),
+        ('-t2w.nii.gz', 'T2'),
+        # BraTS 2020/2021 (underscore-separated)
+        ('_t1ce.nii.gz', 'T1c'),
+        ('_t1c.nii.gz', 'T1c'),
+        ('_flair.nii.gz', 'FLAIR'),
+        ('_t1.nii.gz', 'T1'),
+        ('_t2.nii.gz', 'T2'),
+    ]
     for patient_dir in sorted(root.iterdir()):
         if not patient_dir.is_dir():
             continue
         entry = {'scan_id': patient_dir.name}
-        for f in patient_dir.iterdir():
-            for suf, mod in suffix_to_modality.items():
-                if f.name.lower().endswith(suf):
-                    entry[mod] = str(f)
-        # Need at least 2 modalities to form valid (S, m) pairs
+        for f in sorted(patient_dir.iterdir()):
+            low = f.name.lower()
+            for suf, mod in suffix_to_modality:
+                if low.endswith(suf):
+                    if mod not in entry:
+                        entry[mod] = str(f)
+                    break
         present = [m for m in MODALITIES if m in entry]
         if len(present) >= 2:
             out.append(entry)

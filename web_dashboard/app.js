@@ -223,6 +223,13 @@ class NeuroLensApp {
             this.currentResults = this.buildResultsFromBackend(patientId, predictionResults, metricsByModel);
             this.currentSegmentation = segmentation;
 
+            // Classifier-driven v3 fallback was removed 2026-06-01 along
+            // with the classifier ensemble itself. The 4-signal advisory
+            // (v9c+ANDi+v8+symmetry) now drives the verdict, so the
+            // segmentation result is consumed as-is regardless of mask
+            // area; the ensemble may still verdict TUMOR via the
+            // (v9c AND sym) branch even when v8's mask is empty.
+
             // Push to session-scoped Recent Scans sidebar.
             this.addRecentScan({
                 id: patientId,
@@ -246,11 +253,12 @@ class NeuroLensApp {
         }
     }
 
-    async callSegment(file, threshold = 0.5, modality = '') {
+    async callSegment(file, threshold = 0.5, modality = '', enableV3Fallback = false) {
         const form = new FormData();
         form.append('image', file, file.name || 'upload.png');
         form.append('threshold', String(threshold));
         if (modality) form.append('modality', modality);
+        if (enableV3Fallback) form.append('enable_v3_fallback', '1');
         const resp = await fetch('/segment', { method: 'POST', body: form });
         if (!resp.ok) {
             throw new Error(`/segment returned ${resp.status}`);
@@ -400,25 +408,56 @@ class NeuroLensApp {
     
     displayResults() {
         const results = this.currentResults;
-        
+
         // Update subtitle
-        document.getElementById('resultsSubtitle').textContent = 
+        document.getElementById('resultsSubtitle').textContent =
             `Scan: ${results.patientId} · Analyzed at ${results.timestamp}`;
-        
-        // Update metrics
-        document.getElementById('diagnosisValue').textContent = results.diagnosis;
-        document.getElementById('diagnosisDetail').textContent = 'Requires clinical review';
-        
-        document.getElementById('confidenceValue').textContent = 
-            `${(results.confidence * 100).toFixed(1)}%`;
-        document.getElementById('confidenceFill').style.width = 
-            `${results.confidence * 100}%`;
-        
-        document.getElementById('modelValue').textContent = 
-            results.bestModel.modelLabel;
-        
-        document.getElementById('timeValue').textContent = 
+
+        // The 4-signal advisory verdict (returned by /segment as of
+        // 2026-06-03b) is now the source of truth for the top-line
+        // diagnosis card. Fall back to v8-area gate when the advisory
+        // wasn't attached (e.g. older Space version or wire-up failure).
+        const segR = this.currentSegmentation && this.currentSegmentation.result;
+        const advVerdict = segR && segR.verdict;
+        const advConfidence = segR && segR.confidence;       // 'high' | 'low'
+        const advRule = segR && segR.rule;
+        const advOp = segR && segR.operating_point;
+        const advReview = !!(segR && segR.review_recommended);
+
+        document.getElementById('diagnosisValue').textContent =
+            advVerdict === 'TUMOR' ? 'TUMOR DETECTED'
+            : advVerdict === 'no_tumor' ? 'NO TUMOR'
+            : results.diagnosis;
+        document.getElementById('diagnosisDetail').textContent =
+            advReview ? 'Low-confidence positive · radiologist review recommended'
+            : (advConfidence ? `${advConfidence} confidence ensemble verdict` : 'Requires clinical review');
+
+        // Confidence card: show ensemble confidence band when available,
+        // else fall back to the legacy classifier-derived confidence float.
+        const confEl = document.getElementById('confidenceValue');
+        const confFillEl = document.getElementById('confidenceFill');
+        if (advConfidence) {
+            confEl.textContent = advConfidence.toUpperCase();
+            // Map high -> 90%, low -> 45% as a visual cue. Real recall/FPR
+            // depend on the operating point and the rule branches that fired.
+            const w = advConfidence === 'high' ? 90 : 45;
+            confFillEl.style.width = `${w}%`;
+        } else {
+            confEl.textContent = `${(results.confidence * 100).toFixed(1)}%`;
+            confFillEl.style.width = `${results.confidence * 100}%`;
+        }
+
+        // Repurposed Model card now shows the active ensemble rule.
+        document.getElementById('modelValue').textContent =
+            advRule || (results.bestModel && results.bestModel.modelLabel) || '--';
+        document.getElementById('modelDetail').textContent =
+            advOp ? `Operating point: ${advOp}` : 'Based on accuracy';
+
+        document.getElementById('timeValue').textContent =
             `${results.processingTime}s`;
+
+        // Render the 4-signal Ensemble Sources panel.
+        this.renderEnsembleSignalsPanel(segR && segR.v9b_advisory);
         
         // Update comparison table with real metrics from /metrics. Accuracy and
         // AUC come from the persisted JSONs, not from the live prediction.
@@ -503,29 +542,56 @@ class NeuroLensApp {
                 .forEach(id => setT(id, '--'));
         }
 
+        this.renderMedsamRefiner(segResult && segResult.medsam_refiner);
+        this.renderConformalCounterfactual(segResult && segResult.conformal_counterfactual);
+
         // --- Visualizations ----------------------------------------------
         if (this.imageDataUrl) document.getElementById('vizImage').src = this.imageDataUrl;
         this.setHeatmapFromBackend(results.bestModel);
 
-        // Apply the classifier-verdict gate. When all 3 classifiers agree NO
-        // tumor with at least 'moderate' confidence, the U-Net mask is
-        // treated as a probable false positive: the overlay tab shows the
-        // ORIGINAL image with a warning badge, instead of the green-stained
-        // overlay. The raw mask tab still shows the model's output for
-        // transparency.
+        // Mask suppression gate. v5 (joint-trained on positives + healthy brains)
+        // mostly handles FP discipline at the segmenter level (0.13% FP rate on
+        // healthy validation scans). The classifier consensus is a secondary
+        // safety net for the rare residual FP voxels. So:
+        //   - segmenter mask EMPTY + classifiers say no-tumor  => confirmed no-tumor,
+        //     show a SUCCESS banner, not a warning. v5 did its job.
+        //   - segmenter mask NON-EMPTY + classifiers say no-tumor => v5 produced
+        //     residual FP voxels; suppress the overlay and explain.
+        //   - segmenter mask NON-EMPTY + classifiers say tumor   => normal path,
+        //     no banner, show overlay.
+        //   - segmenter mask EMPTY + classifiers say tumor       => disagreement;
+        //     show a "models disagree" warning so the radiologist re-reviews.
         const maskImg = document.getElementById('maskImage');
         const segoverlayImg = document.getElementById('segoverlayImage');
         const verdict = results.consensus && results.consensus.verdict;
         const verdictBand = results.consensus && results.consensus.band;
-        const suppress = (verdict === 'no_tumor' && (verdictBand === 'high' || verdictBand === 'moderate'));
+        const tumorAreaPx = segResult && Number(segResult.tumor_area_px || 0);
+        const segIsEmpty = tumorAreaPx < 16;  // matches the MedSAM min_coarse_pixels
+        const classifiersSayNoTumor = (verdict === 'no_tumor' && (verdictBand === 'high' || verdictBand === 'moderate'));
+        const classifiersSayTumor = (verdict === 'tumor' && (verdictBand === 'high' || verdictBand === 'moderate'));
+        const meanP = (results.consensus && typeof results.consensus.mean === 'number') ? results.consensus.mean.toFixed(3) : '--';
+        const segName = (segResult && (segResult.cascade && segResult.cascade.used)) || (segResult && segResult.source_dir) || 'segmenter';
+
+        let suppress = false;
+        let bannerKind = null;   // 'success' | 'warn-fp' | 'warn-disagree' | null
+        let bannerText = null;
+        if (segIsEmpty && classifiersSayNoTumor) {
+            bannerKind = 'success';
+            bannerText = `Confirmed no-tumor: ${segName} (joint-trained on positives + healthy brains) produced an empty mask, and all 3 classifiers agree (mean p=${meanP}, ${verdictBand} confidence). No suppression needed.`;
+        } else if (!segIsEmpty && classifiersSayNoTumor) {
+            suppress = true;
+            bannerKind = 'warn-fp';
+            bannerText = `Suppressed: ${segName} produced ${tumorAreaPx} px of residual mask, but classifier consensus is no-tumor (mean p=${meanP}, ${verdictBand} confidence). v5/v7 joint training reduced segmenter FP rate to ~0.13%, but rare residual false positives still get gated here.`;
+        } else if (segIsEmpty && classifiersSayTumor) {
+            bannerKind = 'warn-disagree';
+            bannerText = `Model disagreement: classifiers say tumor (mean p=${meanP}, ${verdictBand} confidence) but ${segName} produced an empty mask. Recommend manual review.`;
+        }
         this._maskSuppressed = suppress;
-        this._maskSuppressedReason = suppress
-            ? `Suppressed: classifier consensus is no-tumor (mean p=${results.consensus.mean.toFixed(3)}, ${verdictBand} confidence). U-Net masks on no-tumor scans are probable false positives - the U-Net was not trained on healthy brains.`
-            : null;
+        this._maskSuppressedReason = bannerText;
+        this._maskSuppressedKind = bannerKind;
+
         if (segResult && maskImg && segoverlayImg) {
             if (segResult.mask) maskImg.src = segResult.mask;
-            // When suppressed: paint the original image instead of the green
-            // overlay so the user does not get a false-positive visual signal.
             if (suppress && this.imageDataUrl) {
                 segoverlayImg.src = this.imageDataUrl;
             } else if (segResult.overlay) {
@@ -534,6 +600,20 @@ class NeuroLensApp {
         } else if (maskImg && segoverlayImg) {
             maskImg.src = '';
             segoverlayImg.src = '';
+        }
+
+        // Coarse v5 mask/overlay (pre-MedSAM) and bbox-prompt visualization.
+        // segResult.coarse_mask / coarse_overlay are present only when MedSAM
+        // refined a non-empty mask. segResult.medsam_refiner.bbox_overlay is
+        // present whenever MedSAM ran with a valid bbox.
+        const coarseMaskImg = document.getElementById('coarseMaskImage');
+        const coarseOverlayImg = document.getElementById('coarseOverlayImage');
+        const bboxPromptImg = document.getElementById('bboxPromptImage');
+        if (coarseMaskImg) coarseMaskImg.src = (segResult && segResult.coarse_mask) || (segResult && segResult.mask) || '';
+        if (coarseOverlayImg) coarseOverlayImg.src = (segResult && segResult.coarse_overlay) || (segResult && segResult.overlay) || '';
+        if (bboxPromptImg) {
+            const bbox = segResult && segResult.medsam_refiner && segResult.medsam_refiner.bbox_overlay;
+            bboxPromptImg.src = bbox || (this.imageDataUrl || '');
         }
         
         // Show results section
@@ -571,6 +651,149 @@ class NeuroLensApp {
             if (placeholder) {
                 placeholder.textContent = this._gradcamUnavailableReason;
             }
+        }
+    }
+
+    renderEnsembleSignalsPanel(advisory) {
+        // Populates the "Four-Signal Ensemble Verdict" panel added 2026-06-03b.
+        // Hides the panel if the advisory isn't attached (older Space build
+        // or wire-up failure).
+        const card = document.getElementById('ensembleSignalsCard');
+        if (!card) return;
+        if (!advisory || advisory.enabled === false) {
+            card.style.display = 'none';
+            return;
+        }
+        card.style.display = 'block';
+
+        const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        setT('ensembleRule', advisory.rule || '--');
+        setT('ensembleOp', advisory.operating_point || '--');
+        const m = advisory.measured_performance || {};
+        const reFmt = (v) => (v == null ? '--' : `${(v * 100).toFixed(0)}%`);
+        const f1Fmt = (v) => (v == null ? '--' : v.toFixed(2));
+        setT('ensembleMeasured',
+            `measured ${reFmt(m.ood_recall)} recall / ${reFmt(m.ood_fpr)} FPR / ${f1Fmt(m.ood_f1)} F1`);
+
+        const reviewBadge = document.getElementById('reviewBadge');
+        if (reviewBadge) {
+            reviewBadge.style.display = advisory.review_recommended ? 'block' : 'none';
+        }
+
+        const setSig = (sigKey, fired, value, threshold, fmt) => {
+            const stateEl = document.getElementById(`sig-${sigKey}-state`);
+            const valEl = document.getElementById(`sig-${sigKey}-val`);
+            const thrEl = document.getElementById(`sig-${sigKey}-thresh`);
+            if (stateEl) {
+                if (fired === true) {
+                    stateEl.textContent = 'FIRED';
+                    stateEl.style.background = '#d1fae5';
+                    stateEl.style.color = '#065f46';
+                } else if (fired === false) {
+                    stateEl.textContent = 'silent';
+                    stateEl.style.background = '#e5e7eb';
+                    stateEl.style.color = '#475569';
+                } else {
+                    stateEl.textContent = 'off';
+                    stateEl.style.background = '#f3f4f6';
+                    stateEl.style.color = '#94a3b8';
+                }
+            }
+            if (valEl) valEl.textContent = value == null ? '--' : fmt(value);
+            if (thrEl) thrEl.textContent = threshold == null ? '--' : fmt(threshold);
+        };
+        const f3 = v => Number(v).toFixed(3);
+        const fSci = v => Number(v).toExponential(2);
+        const fInt = v => String(Math.round(Number(v)));
+        setSig('v9c', advisory.v9c_fired, advisory.v9c_p95, advisory.v9c_threshold, f3);
+        setSig('andi', advisory.andi_fired, advisory.andi_max, advisory.andi_threshold, fSci);
+        setSig('v8', advisory.v8_fired, advisory.v8_area_px, advisory.v8_area_threshold, fInt);
+        setSig('sym', advisory.symmetry_fired, advisory.symmetry_p95, advisory.symmetry_threshold, f3);
+    }
+
+    renderMedsamRefiner(ms) {
+        const panel = document.getElementById('medsamPanel');
+        if (!panel) return;
+        const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        if (!ms) {
+            panel.style.display = 'none';
+            return;
+        }
+        panel.style.display = '';
+        if (!ms.available) {
+            setT('medsamStatus', `unavailable: ${ms.reason || 'unknown'}`);
+            setT('medsamCoarse', '--'); setT('medsamRefined', '--');
+            setT('medsamDelta', '--'); setT('medsamIou', '--'); setT('medsamMs', '--');
+            return;
+        }
+        if (ms.skipped_reason) {
+            setT('medsamStatus', `skipped: ${ms.skipped_reason}`);
+        } else {
+            setT('medsamStatus', `active (${ms.model || 'MedSAM ViT-B'})`);
+        }
+        setT('medsamCoarse', (ms.coarse_area_px != null) ? `${ms.coarse_area_px} px` : '--');
+        setT('medsamRefined', (ms.refined_area_px != null) ? `${ms.refined_area_px} px` : '--');
+        const delta = ms.delta_area_px;
+        setT('medsamDelta', (delta != null) ? `${delta > 0 ? '+' : ''}${delta} px` : '--');
+        setT('medsamIou', (ms.iou_score != null) ? ms.iou_score.toFixed(3) : '--');
+        setT('medsamMs', (ms.elapsed_ms != null) ? `${ms.elapsed_ms.toFixed(0)} ms` : '--');
+    }
+
+    renderConformalCounterfactual(cf) {
+        // cf may be null (no calibration artifacts), undefined (no segment
+        // result yet), or the analyze() dict from src/research/dashboard_integration.py.
+        const hero = document.getElementById('conformalCfHero');
+        const hint = document.getElementById('conformalCfMissingHint');
+        if (!hero) return;
+        if (!cf || !cf.available || !Array.isArray(cf.interventions) || cf.interventions.length === 0) {
+            hero.style.display = 'none';
+            // Show the "pending artifacts" hint so the user knows the panel
+            // is real and will populate as soon as artifacts download.
+            if (hint) hint.style.display = '';
+            return;
+        }
+        hero.style.display = '';
+        if (hint) hint.style.display = 'none';
+        const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        const methodEl = document.getElementById('conformalCfMethod');
+        if (methodEl && cf._method) methodEl.textContent = cf._method;
+        const firstAlpha = cf.interventions[0] && cf.interventions[0].alpha;
+        setT('conformalCfCoverage',
+            firstAlpha != null ? `${(100 * (1 - firstAlpha)).toFixed(0)}% (α = ${firstAlpha.toFixed(2)})` : '--');
+        setT('conformalCfNiv', String(cf.n_interventions));
+        const sum = cf.summary || {};
+        const labelFor = (slug) => {
+            const row = cf.interventions.find(r => r.slug === slug);
+            return row ? row.label : (slug || '--');
+        };
+        setT('conformalCfMaxDis',
+            sum.max_disagree_intervention
+                ? `${labelFor(sum.max_disagree_intervention)} (${(100 * (sum.max_disagree_fraction || 0)).toFixed(2)}%)`
+                : '--');
+        setT('conformalCfMostRobust', sum.most_robust_intervention ? labelFor(sum.most_robust_intervention) : '--');
+
+        const tbody = document.getElementById('conformalCfTbody');
+        if (tbody) {
+            tbody.innerHTML = '';
+            cf.interventions.forEach(row => {
+                const tr = document.createElement('tr');
+                const cells = [
+                    row.label,
+                    (row.q != null) ? row.q.toFixed(3) : '--',
+                    (row.abstain_fraction != null) ? (100 * row.abstain_fraction).toFixed(2) + '%' : '--',
+                    (row.certified_disagree_fraction != null) ? (100 * row.certified_disagree_fraction).toFixed(2) + '%' : '--',
+                    (row.intervention_cf_area_px != null) ? String(row.intervention_cf_area_px) : '--',
+                ];
+                cells.forEach((c, i) => {
+                    const td = document.createElement('td');
+                    td.textContent = c;
+                    td.style.padding = '4px 8px';
+                    td.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+                    if (i > 0) td.style.textAlign = 'right';
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
         }
     }
 
@@ -1403,7 +1626,8 @@ class NeuroLensApp {
         
         // Handle view switching
         if (btn.dataset.view) {
-            ['vizImage', 'heatmapImage', 'overlayImage', 'maskImage', 'segoverlayImage', 'vizPlaceholder'].forEach(id => {
+            ['vizImage', 'heatmapImage', 'overlayImage', 'maskImage', 'segoverlayImage',
+             'coarseMaskImage', 'coarseOverlayImage', 'bboxPromptImage', 'vizPlaceholder'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.style.display = 'none';
             });
@@ -1425,6 +1649,9 @@ class NeuroLensApp {
                 overlay: 'overlayImage',
                 mask: 'maskImage',
                 segoverlay: 'segoverlayImage',
+                coarse_mask: 'coarseMaskImage',
+                coarse_overlay: 'coarseOverlayImage',
+                bbox_prompt: 'bboxPromptImage',
             };
             const targetId = idMap[tabType] || `${tabType}Image`;
             const target = document.getElementById(targetId);

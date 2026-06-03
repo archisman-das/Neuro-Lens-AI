@@ -110,6 +110,44 @@ DEFAULT_HF_MODEL_VISION = os.environ.get(
 # ---------------------------------------------------------------------------
 
 
+def _advisory_summary(advisory: dict) -> dict:
+    """Boil the v9b advisory payload down to a flat dict the deterministic
+    narrative can quote verbatim. Every value here is measured at request
+    time — nothing is invented by the LLM. Used as part of the
+    zero-hallucination substrate.
+    """
+    signal_states = []
+    for label, fired_key, value_key in (
+        ('v9c (DINOv2+JEPA)',     'v9c_fired',      'v9c_p95'),
+        ('ANDi DDPM',              'andi_fired',     'andi_max'),
+        ('v8 segmentation',        'v8_fired',       'v8_area_px'),
+        ('symmetry geometry',      'symmetry_fired', 'symmetry_p95'),
+    ):
+        fired = advisory.get(fired_key)
+        value = advisory.get(value_key)
+        if fired is None and value is None:
+            continue
+        signal_states.append({
+            'signal': label,
+            'fired': bool(fired) if fired is not None else None,
+            'value': value,
+        })
+    measured = advisory.get('measured_performance') or {}
+    return {
+        'verdict': advisory.get('verdict', 'no_tumor'),
+        'confidence': advisory.get('confidence', 'low'),
+        'operating_point': advisory.get('operating_point', 'balanced'),
+        'rule': advisory.get('rule', 'ensemble'),
+        'signals_used': advisory.get('signals_used', ''),
+        'signal_states': signal_states,
+        'review_recommended': bool(advisory.get('review_recommended', False)),
+        'measured_recall': measured.get('ood_recall'),
+        'measured_fpr': measured.get('ood_fpr'),
+        'measured_f1': measured.get('ood_f1'),
+        'cohort': measured.get('cohort', '246-sample OOD bench'),
+    }
+
+
 def explain(
     image_rgb: np.ndarray,
     mask_bin: np.ndarray,
@@ -120,6 +158,7 @@ def explain(
     *,
     modality_channels: Optional[tuple[str, str, str]] = None,
     backend: Optional[str] = None,
+    advisory: Optional[dict] = None,
 ) -> dict:
     """Layered explanation pipeline (zero-hallucination by construction).
 
@@ -158,6 +197,12 @@ def explain(
 
     # ---- Step 0 - deterministic substrate ---------------------------------
     deterministic = _local_narrative(features, classifier_results)
+    # Inject the 4-signal advisory verdict + signal-level firing breakdown
+    # into the deterministic substrate. This becomes part of the source of
+    # truth that the LLM polish pass is constrained to, so the generated
+    # prose can reference the ensemble rule without inventing it.
+    if advisory:
+        deterministic['ensemble_advisory'] = _advisory_summary(advisory)
 
     backend_used = 'none'
     model_used = 'deterministic'
@@ -176,6 +221,8 @@ def explain(
         payload['deterministic_report'] = deterministic
         payload['llm_passes'] = llm_passes
         payload['hallucination_safety'] = 'guaranteed_zero (no LLM was called)'
+        if advisory:
+            payload['ensemble_advisory'] = deterministic['ensemble_advisory']
         return payload
 
     # Short-circuit: when the classifier consensus is firmly NO_TUMOR (all
@@ -463,6 +510,8 @@ def explain(
         'deterministic substrate preserved; LLM-added content is citation-checked '
         'and conflict-flagged. See llm_passes for per-pass results.'
     )
+    if deterministic.get('ensemble_advisory'):
+        payload['ensemble_advisory'] = deterministic['ensemble_advisory']
     return payload
 
 
@@ -509,6 +558,18 @@ def _build_text_combined_prompt(deterministic: dict, features: dict) -> str:
     rule_text = '\n'.join(f'- {b}' for b in rule_diffs) or '(none)'
     feat_compact = _compact_features_for_diff(features)
     citable = '\n'.join(sorted(_DIFFERENTIAL_CITABLE_KEYS))
+    # Include the ensemble advisory in the source-of-truth block so the
+    # polish pass can reference the verdict + which signals fired without
+    # inventing them. The strict rule already forbids adding facts not in
+    # the source, so quoting the advisory here is the only safe surface.
+    advisory_summary = deterministic.get('ensemble_advisory')
+    if advisory_summary:
+        advisory_block = (
+            "--- ENSEMBLE ADVISORY (measured at request time) ---\n"
+            f"{json.dumps(advisory_summary, indent=2, default=_safe_default)}\n"
+        )
+    else:
+        advisory_block = ""
     return (
         "You are a neuroradiology assistant. Produce one JSON object with two sections. "
         "STRICT RULES:\n"
@@ -518,7 +579,10 @@ def _build_text_combined_prompt(deterministic: dict, features: dict) -> str:
         "4. Output a single JSON object - no markdown, no preamble.\n\n"
         "SECTION 1 - 'polished_impression' (Pattern A):\n"
         "  - 3 to 6 sentences of radiology-style prose.\n"
-        "  - Rephrase the SOURCE; do NOT add facts. Numbers must stay identical.\n\n"
+        "  - Rephrase the SOURCE; do NOT add facts. Numbers must stay identical.\n"
+        "  - If an ENSEMBLE ADVISORY block is present, your prose may quote\n"
+        "    the verdict, confidence, operating_point, rule, and individual\n"
+        "    signal fired-states verbatim — these are measurements, not opinions.\n\n"
         "SECTION 2 - 'additional_differentials' (Pattern B):\n"
         "  - Up to 4 differentials NOT already in the already-proposed list.\n"
         "  - Each MUST cite a key from the citable whitelist as 'feature.key=value'.\n"
@@ -528,6 +592,7 @@ def _build_text_combined_prompt(deterministic: dict, features: dict) -> str:
         f"{impression}\n"
         "--- SOURCE FINDINGS ---\n"
         f"{fields_text}\n"
+        f"{advisory_block}"
         "--- ALREADY-PROPOSED DIFFERENTIALS (do not repeat) ---\n"
         f"{rule_text}\n"
         "--- CITABLE FEATURE KEYS (whitelist) ---\n"

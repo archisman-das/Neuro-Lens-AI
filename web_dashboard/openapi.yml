@@ -188,3 +188,29 @@ components:
         error:
           type: string
           nullable: true
+        # 4-signal ensemble verdict (added 2026-06-03b). Sourced from the
+        # v9b advisory; v8 mask area alone no longer drives the verdict.
+        verdict:
+          type: string
+          enum: [TUMOR, no_tumor]
+          description: Final ensemble verdict. Source of truth for the UI Diagnosis card.
+        confidence:
+          type: string
+          enum: [high, low]
+          description: high if 2+ ensemble signals fired; low if only one branch of the OR.
+        rule:
+          type: string
+          description: Ensemble rule that produced the verdict, e.g. "(v9c AND sym) OR (v8 AND andi)".
+        signals_used:
+          type: string
+          description: Which signal set was available, e.g. "4-signal v9c+v8+sym+andi" or "2-signal v8+sym".
+        operating_point:
+          type: string
+          enum: [balanced, high_recall, high_specificity, fallback]
+          description: Active operating point. balanced (default) gives 97% recall / 6% FPR / 0.83 F1.
+        review_recommended:
+          type: boolean
+          description: True when the positive is low-confidence and a radiologist should review.
+        v9b_advisory:
+          type: object
+          description: Full advisory payload with per-signal scores, thresholds, and measured performance metadata.

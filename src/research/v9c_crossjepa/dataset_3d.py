@@ -138,6 +138,67 @@ def _slice_to_rgb_uint8(slice_arr: np.ndarray,
     return np.stack([arr, arr, arr], axis=-1)
 
 
+def _apply_intensity_aug(volume: np.ndarray,
+                           rng: random.Random,
+                           intensity_jitter: float,
+                           contrast_jitter: float,
+                           gamma_jitter: float,
+                           bias_field_strength: float,
+                           noise_std: float,
+                           renormalize_pct: float = 0.5) -> np.ndarray:
+    """In-volume preprocessing-invariance augmentation. All transforms
+    are applied to the whole volume so per-slice statistics shift
+    consistently (otherwise the encoder would just learn to ignore
+    the augmentation).
+
+    The five transforms:
+      1. INTENSITY jitter — additive shift in [-intensity_jitter, +intensity_jitter]
+      2. CONTRAST jitter — multiplicative scaling in [1 - contrast_jitter, 1 + contrast_jitter]
+      3. GAMMA jitter — non-linear x ** gamma, gamma in [1 - g, 1 + g]
+      4. BIAS FIELD — smooth low-frequency multiplicative field
+         (simulates scanner inhomogeneity, the #1 source of per-volume
+         intensity drift across MRI sites)
+      5. RENORMALIZE — with probability renormalize_pct, re-clip to the
+         volume's own p1/p99 (simulates a downstream pipeline that
+         re-normalizes images before feeding the model — exactly the
+         class of preprocessing shift that broke us on IXI)
+
+    Each individual transform is applied with prob 0.7 so the encoder
+    sees a mix of "clean" and "shifted" inputs per epoch.
+    """
+    out = volume.astype(np.float32, copy=True)
+    if rng.random() < 0.7 and intensity_jitter > 0:
+        shift = rng.uniform(-intensity_jitter, intensity_jitter)
+        out = out + shift
+    if rng.random() < 0.7 and contrast_jitter > 0:
+        scale = rng.uniform(1.0 - contrast_jitter, 1.0 + contrast_jitter)
+        out = (out - 0.5) * scale + 0.5
+    if rng.random() < 0.7 and gamma_jitter > 0:
+        gamma = rng.uniform(1.0 - gamma_jitter, 1.0 + gamma_jitter)
+        out = np.sign(out) * (np.abs(out).clip(1e-6, None) ** gamma)
+    if rng.random() < 0.7 and bias_field_strength > 0:
+        # Smooth low-frequency multiplicative field — simulates scanner
+        # bias inhomogeneity. Generate at 4x4x4, upsample by repeat to
+        # the volume shape (piecewise-constant is fine for augmentation).
+        coarse = (np.random.rand(4, 4, 4).astype(np.float32) - 0.5) * 2 * bias_field_strength
+        bf = coarse
+        for axis, target_size in enumerate(out.shape):
+            reps = int(np.ceil(target_size / bf.shape[axis]))
+            bf = bf.repeat(reps, axis=axis)
+            bf = np.take(bf, range(target_size), axis=axis)
+        out = out * (1.0 + bf)
+    if rng.random() < 0.7 and noise_std > 0:
+        out = out + np.random.randn(*out.shape).astype(np.float32) * noise_std
+    out = out.clip(0.0, 1.0)
+    if rng.random() < renormalize_pct:
+        nz = out[out > 0]
+        if nz.size > 100:
+            lo, hi = np.percentile(nz, [1.0, 99.0])
+            if hi - lo > 1e-6:
+                out = ((out - lo) / (hi - lo)).clip(0.0, 1.0).astype(np.float32)
+    return out
+
+
 def _center_crop_pad_2d(arr: np.ndarray, target: tuple) -> np.ndarray:
     """Center-crop or zero-pad a 2D array to `target` (h, w)."""
     th, tw = target
@@ -175,7 +236,15 @@ class Vol2SliceDataset(IterableDataset):
                  slices_per_volume: int = 6, hist_dim: int = 48,
                  planes: Sequence[str] = PLANES, seed: int = 0,
                  shuffle: bool = True,
-                 slice_resize_hw: Tuple[int, int] = (256, 256)):
+                 slice_resize_hw: Tuple[int, int] = (256, 256),
+                 # ---- preprocessing-invariance augmentations (fix A) ----
+                 augment: bool = False,
+                 aug_intensity_jitter: float = 0.20,
+                 aug_contrast_jitter: float = 0.30,
+                 aug_gamma_jitter: float = 0.30,
+                 aug_bias_field_strength: float = 0.15,
+                 aug_noise_std: float = 0.02,
+                 aug_renormalize_pct: float = 0.5):
         super().__init__()
         self.scan_paths = list(scan_paths)
         self.volume_size = volume_size
@@ -185,12 +254,22 @@ class Vol2SliceDataset(IterableDataset):
         self.planes = tuple(planes)
         self.rng = random.Random(seed)
         self.shuffle = shuffle
-        # All extracted 2D slices are resized to this shape so axial,
-        # sagittal, coronal extractions from a non-cube volume stack
-        # cleanly in a DataLoader batch. v8 teacher resizes to 384
-        # internally; 256 is a reasonable intermediate that keeps file
-        # transfer small without losing the structure.
         self.slice_resize_hw = tuple(slice_resize_hw)
+        # Augmentation parameters. When `augment=True` we apply a chain
+        # of intensity/contrast/gamma/bias-field perturbations to BOTH
+        # the volume AND the target slice (the v8 teacher then sees the
+        # augmented slice, so the prediction target moves consistently).
+        # This forces the encoder to learn preprocessing-pipeline-
+        # invariant healthy-brain features rather than memorizing the
+        # specific intensity distribution of the training set (which
+        # was the failure mode caught by the IXI held-out eval).
+        self.augment = augment
+        self.aug_intensity_jitter = aug_intensity_jitter
+        self.aug_contrast_jitter = aug_contrast_jitter
+        self.aug_gamma_jitter = aug_gamma_jitter
+        self.aug_bias_field_strength = aug_bias_field_strength
+        self.aug_noise_std = aug_noise_std
+        self.aug_renormalize_pct = aug_renormalize_pct
 
     def __iter__(self) -> Iterator[dict]:
         paths = list(self.scan_paths)
@@ -206,6 +285,21 @@ class Vol2SliceDataset(IterableDataset):
                 vol = vol[0]
             vol = _robust_normalize(vol)
             vol = _crop_or_pad_volume(vol, self.volume_size)
+            # Apply preprocessing-invariance augmentation to the volume
+            # ONCE before slicing — so all extracted slices and their
+            # teacher targets see the same shift. This is critical: if
+            # we re-augmented per slice, the encoder would learn to
+            # average out the noise, not become invariant to it.
+            if self.augment:
+                vol = _apply_intensity_aug(
+                    vol, self.rng,
+                    intensity_jitter=self.aug_intensity_jitter,
+                    contrast_jitter=self.aug_contrast_jitter,
+                    gamma_jitter=self.aug_gamma_jitter,
+                    bias_field_strength=self.aug_bias_field_strength,
+                    noise_std=self.aug_noise_std,
+                    renormalize_pct=self.aug_renormalize_pct,
+                )
             D, H, W = vol.shape
             scan_id = Path(p).stem
             for _ in range(self.slices_per_volume):

@@ -23,10 +23,8 @@ BUNDLE_FILES = [
     'colab_bundle/__init__.py',
     'colab_bundle/requirements_colab.txt',
     'colab_bundle/v9b_colab_train.ipynb',
-    'colab_bundle/v9c_crossjepa_train.ipynb',   # NEW (June 2026): v9c
-                                                # CrossJEPA Method 1 trainer
-                                                # notebook (also referenced
-                                                # in the dataset bundle README).
+    'colab_bundle/v9c_crossjepa_train.ipynb',          # Method 1 trainer
+    'colab_bundle/v9c_crossjepa_method2_train.ipynb',  # Method 2 trainer (2-phase)
 ]
 
 # src/ files unzipped into /content/neurolens/src/ on the Colab VM. After

@@ -70,6 +70,21 @@ def main():
     ap.add_argument('--amp', action='store_true')
     ap.add_argument('--resume', default='auto')
     ap.add_argument('--checkpoint_every_steps', type=int, default=200)
+    # --- Preprocessing-invariance augmentation (Fix A, June 2026) ---
+    # Critical: the initial train run learned dataset-specific
+    # preprocessing rather than the healthy-brain manifold, so on
+    # held-out IXI it scored healthy volumes HIGHER than tumors. These
+    # augmentations randomly perturb intensity/contrast/gamma/bias-field
+    # to force preprocessing invariance.
+    ap.add_argument('--augment', action='store_true',
+                     help='Enable intensity/contrast/gamma/bias-field augmentation '
+                          '(strongly recommended for the v2 retrain).')
+    ap.add_argument('--aug_intensity_jitter', type=float, default=0.20)
+    ap.add_argument('--aug_contrast_jitter', type=float, default=0.30)
+    ap.add_argument('--aug_gamma_jitter', type=float, default=0.30)
+    ap.add_argument('--aug_bias_field_strength', type=float, default=0.15)
+    ap.add_argument('--aug_noise_std', type=float, default=0.02)
+    ap.add_argument('--aug_renormalize_pct', type=float, default=0.5)
     args = ap.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -99,7 +114,19 @@ def main():
                             volume_size=tuple(args.volume_size),
                             in_channels=args.in_channels,
                             slices_per_volume=args.slices_per_volume,
-                            shuffle=True)
+                            shuffle=True,
+                            augment=args.augment,
+                            aug_intensity_jitter=args.aug_intensity_jitter,
+                            aug_contrast_jitter=args.aug_contrast_jitter,
+                            aug_gamma_jitter=args.aug_gamma_jitter,
+                            aug_bias_field_strength=args.aug_bias_field_strength,
+                            aug_noise_std=args.aug_noise_std,
+                            aug_renormalize_pct=args.aug_renormalize_pct)
+    log(f'[init] augmentation = {"ON" if args.augment else "OFF"}'
+        + (f' (jitter={args.aug_intensity_jitter}, contrast={args.aug_contrast_jitter}, '
+           f'gamma={args.aug_gamma_jitter}, bias={args.aug_bias_field_strength}, '
+           f'noise={args.aug_noise_std}, renorm_p={args.aug_renormalize_pct})'
+           if args.augment else ''))
     loader = DataLoader(ds, batch_size=args.batch_size,
                          num_workers=args.num_workers, pin_memory=(device == 'cuda'),
                          collate_fn=_collate)

@@ -943,24 +943,27 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
         except Exception:
             view_info = None
 
-    # --- 2b+) v9b Tier-2 advisory (v9c + v8 + symmetry ensemble) ----------
-    # Rewritten 2026-06-03 after v9c (frozen DINOv2-base + trained JEPA
-    # predictor head) hit AUC = 0.925 on the 246-sample expanded OOD
-    # bench. New default ensemble: (v9c OR v8) AND symmetry, measured at
-    # 94% recall / 11% FPR / 0.72 F1 — high-recall by clinical-safety
-    # design (missing a tumor is far worse than flagging a healthy scan
-    # that a reviewer can rule out).
+    # --- 2b+) v9b Tier-2 advisory (4-signal ensemble) --------------------
+    # Updated 2026-06-03b after ANDi (unconditional pyramidal-noise DDPM,
+    # Frotscher et al. 2024) trained on 31k healthy slices added a 4th
+    # complementary signal. The 4-signal rule
+    #     (v9c AND sym) OR (v8 AND andi)
+    # broke the 95/10 OOD target decisively:
     #
     # Operating points (V9B_OPERATING_POINT env var, default = high_recall):
-    #   high_recall      - 94% recall / 11% FPR  (v9c OR v8) AND symmetry
-    #   balanced         - 89% recall /  9% FPR  2-of-3 vote
-    #   high_specificity - 60% recall /  0% FPR  (v9c OR sym) AND v8
-    # All measured on samples/ood/eval_v9c_ensemble_inputs.csv (n=246,
-    # 36 tumor / 210 healthy, LOSO-valid on Navoneel).
+    #   high_recall       100% recall / 14% FPR / 0.71 F1   << can't slip a tumor
+    #   balanced           97% recall /  6% FPR / 0.83 F1
+    #   high_specificity   92% recall /  4% FPR / 0.85 F1
+    # All measured on samples/ood/eval_v9c_ensemble_inputs.csv +
+    # eval_v9b_andi_results.csv (n=246, 36 tumor / 210 healthy,
+    # LOSO-valid on Navoneel).
     #
-    # v9c is opt-in via V9C_ENABLE=1 (requires DINOv2 weights ~340 MB,
-    # see V9C_DOWNLOAD=1 for HF fetch). Without v9c the advisory falls
-    # back to v8 AND symmetry — same ensemble logic, conservative rule.
+    # Signal opt-in toggles + weight fetches:
+    #   V9C_ENABLE=1 + V9C_DOWNLOAD=1            v9c (frozen DINOv2 + JEPA, 340 MB)
+    #   V9B_ANDI_ENABLE=1 + V9B_ANDI_DOWNLOAD=1  ANDi DDPM (16 MB)
+    # When only v9c is on: falls back to the 3-signal rule shipped 2026-06-03.
+    # When only ANDi is on: substitutes ANDi for v9c in the same logical
+    # position. When neither is on: 2-signal (v8 AND symmetry) fallback.
     # Legacy v9b JEPA+DDPM stays behind V9B_HEAVY=1 for research only.
     if image_rgb is not None:
         try:
@@ -1626,6 +1629,14 @@ def _ensure_onnx_models_downloaded():
     if os.environ.get('V9C_DOWNLOAD', '0').strip().lower() in ('1', 'true', 'yes'):
         needed.append(('v9b_artifacts/v9c_stage1/last.pt',
                         'v9c_stage1/last.pt'))
+    # ANDi unconditional DDPM weights (16 MB) — opt-in via V9B_ANDI_DOWNLOAD=1.
+    # Pairs with V9B_ANDI_ENABLE=1 to activate the 4-signal ensemble
+    # (v9c + v8 + sym + andi) that hits 100% recall at 14% FPR. ANDi
+    # inference is much cheaper than v9c (~190ms GPU / ~2-3s CPU) since
+    # the DDPM is small (16 MB vs 340 MB DINOv2-base).
+    if os.environ.get('V9B_ANDI_DOWNLOAD', '0').strip().lower() in ('1', 'true', 'yes'):
+        needed.append(('v9b_artifacts/v9b_andi_ddpm/last.pt',
+                        'v9b_andi_ddpm/last.pt'))
     missing = [(loc, rep) for loc, rep in needed if not (ROOT_DIR / loc).exists()]
     if not missing:
         logger.info('all_onnx_models_already_present')

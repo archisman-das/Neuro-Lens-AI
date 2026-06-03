@@ -41,10 +41,14 @@ REPO_ID = 'Tubai01/neurolens-ai'
 REPO_TYPE = 'space'
 
 # Order matters: dependencies first so importers don't crash at startup.
+# As of 2026-06-03b the advisory imports ANDi modules, so those go up too.
 UPLOAD_ORDER = [
-    ('src/research/v9c_dinov2_jepa.py', 'src/research/v9c_dinov2_jepa.py'),
-    ('src/research/v9b_advisory.py',    'src/research/v9b_advisory.py'),
-    ('dashboard.py',                     'dashboard.py'),
+    ('src/research/v9c_dinov2_jepa.py',          'src/research/v9c_dinov2_jepa.py'),
+    ('src/research/latent_diffusion_decoder.py', 'src/research/latent_diffusion_decoder.py'),
+    ('src/research/andi_inference.py',           'src/research/andi_inference.py'),
+    ('src/research/pyramidal_noise.py',          'src/research/pyramidal_noise.py'),
+    ('src/research/v9b_advisory.py',             'src/research/v9b_advisory.py'),
+    ('dashboard.py',                              'dashboard.py'),
 ]
 
 

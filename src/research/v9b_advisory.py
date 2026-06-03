@@ -241,6 +241,115 @@ def _load_andi_model():
         return None
 
 
+def compute_anomaly_localization_map(image_rgb_uint8: np.ndarray,
+                                        prefer: str = 'andi') -> Optional[dict]:
+    """Compute a per-pixel anomaly map for localization fallback.
+
+    Used by the dashboard when v8 returns an empty mask but the ensemble
+    verdict is TUMOR — we synthesize a mask from whichever neural anomaly
+    signal is available so the UI has something to display + MedSAM has
+    a bbox to refine.
+
+    Returns:
+      {'map': np.ndarray (H, W) float32, 'source': 'andi'|'v9c',
+       'shape_hw': (H, W), 'inference_ms': int}
+      or None if no signal could produce a map.
+
+    The map is in raw signal units (ANDi A_gm or v9c per-patch error).
+    Caller is expected to threshold (e.g. > p95 of map) + clean (largest
+    connected component) to derive a binary mask.
+    """
+    if prefer not in ('andi', 'v9c'):
+        prefer = 'andi'
+    sources = [prefer] + (['v9c'] if prefer == 'andi' else ['andi'])
+    for src in sources:
+        try:
+            if src == 'andi' and _andi_enabled():
+                ddpm = _load_andi_model()
+                if ddpm is None:
+                    continue
+                import torch
+                from PIL import Image
+                from src.research.andi_inference import andi_anomaly_map
+                t0 = time.perf_counter()
+                img = Image.fromarray(image_rgb_uint8).convert('RGB').resize(
+                    (256, 256), Image.BILINEAR)
+                arr = np.asarray(img, dtype=np.float32) / 255.0
+                x0 = torch.from_numpy(arr.transpose(2, 0, 1)).unsqueeze(0).to(_ANDI_DEVICE)
+                cond = torch.zeros(1, _ANDI_COND_DIM, device=_ANDI_DEVICE)
+                with torch.no_grad():
+                    amap = andi_anomaly_map(ddpm, x0, cond, t_low=75, t_high=200,
+                                             stride=5, device=_ANDI_DEVICE, seed=0)
+                # (1, C, H, W) -> (H, W) by channel-max
+                m = amap.squeeze(0).max(dim=0).values.cpu().numpy().astype(np.float32)
+                return {'map': m, 'source': 'andi', 'shape_hw': m.shape,
+                        'inference_ms': int((time.perf_counter() - t0) * 1000)}
+            if src == 'v9c' and _v9c_enabled():
+                model = _load_v9c_model()
+                if model is None:
+                    continue
+                import torch
+                t0 = time.perf_counter()
+                with torch.no_grad():
+                    emap = model.prediction_error_map([image_rgb_uint8])  # (1, 1, 224, 224)
+                m = emap.squeeze().cpu().numpy().astype(np.float32)
+                return {'map': m, 'source': 'v9c', 'shape_hw': m.shape,
+                        'inference_ms': int((time.perf_counter() - t0) * 1000)}
+        except Exception:
+            continue
+    return None
+
+
+def synthesize_fallback_mask(amap: np.ndarray,
+                              target_hw: tuple = (256, 256),
+                              percentile: float = 97.0,
+                              min_area_px: int = 30) -> Optional[np.ndarray]:
+    """Turn a per-pixel anomaly map into a clean binary mask.
+
+    Pipeline:
+      1. Resize to target_hw (typically 256x256 to match v8's output).
+      2. Threshold at the `percentile`-th percentile of the map values
+         — keeps roughly (100 - percentile)% of pixels.
+      3. Morphological close (3x3) to fill small gaps.
+      4. Keep only the largest connected component.
+      5. Reject if final area < min_area_px (noise floor).
+
+    Returns:
+      np.ndarray (H, W) uint8 binary mask, or None if the map is too
+      noisy to produce a meaningful localization.
+    """
+    try:
+        from PIL import Image
+        import scipy.ndimage as ndi
+    except ImportError:
+        return None
+    if amap is None or amap.size == 0:
+        return None
+    # Resize map to target spatial extent (v8 mask shape)
+    src = Image.fromarray(amap.astype(np.float32))
+    src = src.resize((target_hw[1], target_hw[0]), Image.BILINEAR)
+    m = np.asarray(src, dtype=np.float32)
+    # Threshold at the requested percentile
+    thresh = float(np.percentile(m, percentile))
+    binary = (m > thresh).astype(np.uint8)
+    if binary.sum() < min_area_px:
+        return None
+    # Morphological close to fill 1-2 px gaps
+    binary = ndi.binary_closing(binary, iterations=2).astype(np.uint8)
+    # Keep only the largest connected component
+    labeled, n_cc = ndi.label(binary)
+    if n_cc == 0:
+        return None
+    sizes = ndi.sum(binary, labeled, range(1, n_cc + 1))
+    if sizes.size == 0:
+        return None
+    largest = int(np.argmax(sizes)) + 1
+    cleaned = (labeled == largest).astype(np.uint8)
+    if cleaned.sum() < min_area_px:
+        return None
+    return cleaned
+
+
 def _run_andi(image_rgb_uint8: np.ndarray) -> dict:
     """Run ANDi unconditional DDPM inference on a single image. Returns
     {'andi_max': float, 'andi_inference_ms': int} or {} on failure.
@@ -522,4 +631,5 @@ def compute_advisory(image_rgb_uint8: np.ndarray,
     return payload
 
 
-__all__ = ['compute_advisory', 'OPERATING_POINTS']
+__all__ = ['compute_advisory', 'OPERATING_POINTS',
+            'compute_anomaly_localization_map', 'synthesize_fallback_mask']

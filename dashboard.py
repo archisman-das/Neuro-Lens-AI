@@ -1375,6 +1375,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # analyze flow in app.js hits /segment, not /explain). The
             # advisory needs the raw RGB which segment_image already
             # decoded; we re-decode here to keep segment_image pure.
+            v9b = None
+            _img_rgb = None
             try:
                 from PIL import Image as _PIL
                 import io as _io
@@ -1402,6 +1404,67 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 result.setdefault('signals_used', '1-signal: v8')
                 result.setdefault('operating_point', 'fallback')
                 result.setdefault('review_recommended', False)
+
+            # --- Localization fallback ---------------------------------
+            # When v8 returned an empty mask but the ensemble verdict is
+            # TUMOR (the diagonal blindspot case), derive a binary mask
+            # from whichever neural anomaly signal fired so the UI has
+            # something to display + MedSAM has a bbox to refine. The
+            # alternative is a confusing "TUMOR DETECTED but no mask"
+            # response that the user can't act on.
+            result['mask_source'] = 'v8'
+            if (v9b is not None and _img_rgb is not None
+                    and result.get('verdict') == 'TUMOR'
+                    and int(result.get('tumor_area_px', 0) or 0) == 0):
+                try:
+                    from src.research.v9b_advisory import (
+                        compute_anomaly_localization_map, synthesize_fallback_mask)
+                    from PIL import Image as _PIL2
+                    import io as _io2
+                    # Pick the loudest firing signal as the map source
+                    prefer = 'andi' if v9b.get('andi_fired') else 'v9c'
+                    map_info = compute_anomaly_localization_map(_img_rgb, prefer=prefer)
+                    if map_info is not None:
+                        target_hw = (256, 256)
+                        fallback_mask = synthesize_fallback_mask(
+                            map_info['map'], target_hw=target_hw,
+                            percentile=97.0, min_area_px=30)
+                        if fallback_mask is not None:
+                            # Render mask + overlay as data URLs matching v8's format
+                            disp_img = _img.convert('RGB').resize(
+                                (target_hw[1], target_hw[0]), _PIL2.BILINEAR)
+                            disp_arr = np.asarray(disp_img, dtype=np.uint8)
+                            overlay = disp_arr.copy()
+                            alpha = (fallback_mask > 0)
+                            if alpha.any():
+                                # Amber tint to visually distinguish from
+                                # green v8 masks — signals "anomaly-derived"
+                                overlay[alpha] = (
+                                    0.5 * np.array([245, 158, 11], dtype=np.uint8)
+                                    + 0.5 * overlay[alpha]
+                                ).astype(np.uint8)
+
+                            def _png_data_url(np_img):
+                                buf = _io2.BytesIO()
+                                _PIL2.fromarray(np_img).save(buf, format='PNG')
+                                return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
+
+                            result['mask'] = _png_data_url(fallback_mask * 255)
+                            result['overlay'] = _png_data_url(overlay)
+                            result['tumor_area_px'] = int(fallback_mask.sum())
+                            result['mask_source'] = 'anomaly_fallback'
+                            result['mask_fallback_signal'] = map_info['source']
+                            result['mask_fallback_inference_ms'] = map_info.get('inference_ms', 0)
+                            # Mean prob doesn't apply to fallback; use the
+                            # signal value as a stand-in so the UI's
+                            # mean_prob_in_mask field still has data.
+                            if map_info['source'] == 'andi':
+                                result['mean_prob_in_mask'] = float(v9b.get('andi_max', 0))
+                            else:
+                                result['mean_prob_in_mask'] = float(v9b.get('v9c_p95', 0))
+                except Exception as exc:
+                    result['mask_fallback_error'] = f'{type(exc).__name__}: {exc}'
+
             self.respond_json(result)
         except Exception as exc:
             self.respond_json({'success': False, 'error': str(exc)}, status=500)

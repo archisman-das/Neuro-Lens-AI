@@ -106,10 +106,20 @@ def main():
     log(f'  v8 teacher embed dim = {teacher.embed_dim}')
 
     # 2. Dataset
-    scan_paths = sorted(glob.glob(args.scans_glob))
+    # IMPORTANT: pass recursive=True so '**' in the glob actually expands
+    # recursively. The v2 data bundle nests files at varying depths:
+    #   healthy/ixi/IXI*.nii.gz                            (depth 2)
+    #   healthy/radiata/<study>/sub-*/ses-*/anat/*.nii.gz  (depth 6)
+    # Without recursive=True, '**' acts as a single-level wildcard and
+    # the radiata files are silently dropped — the v1 -> v2 surprise
+    # where steps/epoch crashed from 4800 to 6.
+    scan_paths = sorted(glob.glob(args.scans_glob, recursive=True))
     if not scan_paths:
         sys.exit(f'ERROR: no scans matched {args.scans_glob!r}')
-    log(f'[init] {len(scan_paths)} volumes matched')
+    log(f'[init] {len(scan_paths)} volumes matched (recursive glob)')
+    if len(scan_paths) < 100:
+        log(f'  WARNING: only {len(scan_paths)} volumes — expected hundreds. '
+            f'Check the glob pattern + that the dataset bundle is fully unzipped.')
     ds = Vol2SliceDataset(scan_paths=scan_paths,
                             volume_size=tuple(args.volume_size),
                             in_channels=args.in_channels,

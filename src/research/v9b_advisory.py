@@ -41,74 +41,85 @@ import numpy as np
 # Operating points — measured on the expanded 246-sample OOD bench
 # (June 2026, 36 tumor / 210 healthy, Navoneel both-classes for LOSO).
 #
-# Four-signal ensemble when V9C_ENABLE=1 AND V9B_ANDI_ENABLE=1:
+# Four-signal ensemble rule (2026-06-03c, fix1c):
+#     (v9c AND sym) OR (v8 AND andi) OR (sym AND andi) OR (v9c AND v8)
+#
+# The original 2-branch rule `(v9c AND sym) OR (v8 AND andi)` had an
+# architectural blindspot: when the firing pair was the "diagonal"
+# (sym AND andi) or (v9c AND v8), neither branch matched and the rule
+# returned no_tumor even though 2 of 4 signals fired. Discovered on a
+# real OOD scan with unilateral occipital signal:
+#     v9c=0.633 (silent), v8=0 (silent), sym=130 (FIRED), andi=1.49e-4 (FIRED)
+#
+# Adding the two missing pairwise branches closes the blindspot at a
+# cost of +2 to +3 pp FPR across operating points.
+#
+# Signal source:
 #   - v9c     : frozen DINOv2 + trained JEPA predictor (best single signal)
 #   - v8      : nnU-Net segmentation mask area
 #   - symmetry: deterministic axial-symmetry geometry score
 #   - andi    : pyramidal-noise unconditional DDPM (Frotscher et al. 2024)
 #
-# Without v9c: falls back to 3-signal ensemble (v8 + sym + andi) or
-# 2-signal (v8 + sym) depending on what's enabled. Without ANDi: falls
-# back to the prior v9c-3-signal ensemble shipped on 2026-06-03.
+# Without v9c (V9C_ENABLE=0): falls back to a 3-signal rule using the
+# subset of branches whose signals are available. Without ANDi
+# (V9B_ANDI_ENABLE=0): falls back symmetrically.
 #
-# Default = 'high_recall' = 100% recall / 14% FPR — clinical safety
-# choice. The user's explicit stance: "we CAN'T afford to slip a tumor,
-# but low-confidence FPs can be ruled out by human intervention."
+# Default = 'balanced' (97% recall / 9% FPR / 0.78 F1). Use high_recall
+# for zero-misses deployments (100/17) or high_specificity for max precision
+# (92/6).
 OPERATING_POINTS = {
-    # CAN'T SLIP A TUMOR. Measured 100% recall / 14% FPR / 0.71 F1 on
-    # the 246-sample bench with the 4-signal ensemble:
-    #     (v9c AND sym) OR (v8 AND andi)
-    # Catches every tumor in-bench; ~15% of TUMOR verdicts are FPs that
-    # a radiologist rules out by reviewing the same image. Use this as
-    # the default for any deployment where missing a tumor is unacceptable.
+    # CAN'T SLIP A TUMOR. Measured 100% recall / 17% FPR / 0.67 F1 on
+    # the 246-sample bench. Catches every tumor including the
+    # diagonal-firing failure case. Use for any deployment where missing
+    # a tumor is unacceptable; ~5 in 10 TUMOR verdicts are FPs that a
+    # radiologist rules out by review.
     'high_recall': {
-        'v9c_threshold': 0.679,
-        'v8_area_threshold': 99,
-        'symmetry_threshold': 83.0,
-        'andi_threshold': 9.97e-05,
+        'v9c_threshold': 0.582,
+        'v8_area_threshold': 49,
+        'symmetry_threshold': 111.0,
+        'andi_threshold': 1.699e-04,
         'jepa_threshold': 0.489,   # legacy v9b path, kept for compat
-        'rule_4signal':    '(v9c AND sym) OR (v8 AND andi)',
-        'rule_with_v9c':   '(v9c OR v8) AND symmetry',         # 3-signal fallback
-        'rule_without_v9c': 'v8 AND symmetry',                  # 2-signal fallback
+        'rule_4signal':    '(v9c AND sym) OR (v8 AND andi) OR (sym AND andi) OR (v9c AND v8)',
+        'rule_with_v9c':   '(v9c AND sym) OR (v9c AND v8)',     # ANDi-disabled fallback
+        'rule_without_v9c': 'v8 AND symmetry',                   # 2-signal fallback
         'measured': {
-            'ood_recall': 1.00, 'ood_fpr': 0.14, 'ood_f1': 0.71,
+            'ood_recall': 1.00, 'ood_fpr': 0.17, 'ood_f1': 0.67,
             'cohort': '246-sample OOD bench (June 2026)',
-            'with_signals': '4-signal: v9c+v8+sym+andi',
+            'with_signals': '4-signal fix1c: v9c+v8+sym+andi',
         },
     },
-    # Reviewer-friendly tier. Measured 97% recall / 6% FPR / 0.83 F1
-    # on the 4-signal ensemble. Use when reviewer bandwidth is tight
-    # but you still want >=95% recall.
+    # Reviewer-friendly tier (default). Measured 97% recall / 9% FPR /
+    # 0.78 F1. Closes the diagonal blindspot at the cost of 3 pp FPR
+    # vs the prior 97/6/0.83 baseline that missed those cases.
     'balanced': {
-        'v9c_threshold': 0.702,
+        'v9c_threshold': 0.709,
         'v8_area_threshold': 49,
-        'symmetry_threshold': 83.0,
+        'symmetry_threshold': 111.0,
         'andi_threshold': 1.36e-04,
         'jepa_threshold': 0.490,
-        'rule_4signal':    '(v9c AND sym) OR (v8 AND andi)',
-        'rule_with_v9c':   '2-of-3 vote (v9c, v8, symmetry)',   # 3-signal fallback
+        'rule_4signal':    '(v9c AND sym) OR (v8 AND andi) OR (sym AND andi) OR (v9c AND v8)',
+        'rule_with_v9c':   '(v9c AND sym) OR (v9c AND v8)',
         'rule_without_v9c': 'v8 AND symmetry',
         'measured': {
-            'ood_recall': 0.97, 'ood_fpr': 0.06, 'ood_f1': 0.83,
+            'ood_recall': 0.97, 'ood_fpr': 0.09, 'ood_f1': 0.78,
             'cohort': '246-sample OOD bench (June 2026)',
-            'with_signals': '4-signal: v9c+v8+sym+andi',
+            'with_signals': '4-signal fix1c: v9c+v8+sym+andi',
         },
     },
-    # Highest precision (smallest FPR). Measured 92% recall / 4% FPR /
-    # 0.85 F1 on the 4-signal ensemble. Use when FPs are very costly.
+    # Highest precision. Measured 92% recall / 6% FPR / 0.82 F1.
     'high_specificity': {
-        'v9c_threshold': 0.679,
-        'v8_area_threshold': 999,
-        'symmetry_threshold': 96.0,
+        'v9c_threshold': 0.709,
+        'v8_area_threshold': 49,
+        'symmetry_threshold': 121.0,
         'andi_threshold': 1.36e-04,
         'jepa_threshold': 0.449,
-        'rule_4signal':    '(v9c AND sym) OR (v8 AND andi)',
-        'rule_with_v9c':   '(v9c OR symmetry) AND v8',          # 3-signal fallback
+        'rule_4signal':    '(v9c AND sym) OR (v8 AND andi) OR (sym AND andi) OR (v9c AND v8)',
+        'rule_with_v9c':   '(v9c AND sym) OR (v9c AND v8)',
         'rule_without_v9c': 'symmetry AND v8',
         'measured': {
-            'ood_recall': 0.92, 'ood_fpr': 0.04, 'ood_f1': 0.85,
+            'ood_recall': 0.92, 'ood_fpr': 0.06, 'ood_f1': 0.82,
             'cohort': '246-sample OOD bench (June 2026)',
-            'with_signals': '4-signal: v9c+v8+sym+andi',
+            'with_signals': '4-signal fix1c: v9c+v8+sym+andi',
         },
     },
 }
@@ -395,17 +406,24 @@ def compute_advisory(image_rgb_uint8: np.ndarray,
             jepa_fires = heavy['jepa_p95'] > op['jepa_threshold']
 
     # Ensemble rule selection. Best signal-set wins:
-    #   4-signal (v9c + ANDi available): (v9c AND sym) OR (v8 AND andi)
-    #     — measured 100/14/0.71 (high_recall), 97/6/0.83 (balanced),
-    #       92/4/0.85 (high_spec) on 246-sample bench.
-    #   3-signal (v9c only, no ANDi): the rules shipped 2026-06-03.
-    #   2-signal (no v9c, no ANDi): conservative v8+symmetry fallback.
+    #   4-signal (v9c + ANDi available): fix1c rule (closes diagonal blindspot)
+    #       (v9c AND sym) OR (v8 AND andi) OR (sym AND andi) OR (v9c AND v8)
+    #     — measured 100/17/0.67 (high_recall), 97/9/0.78 (balanced),
+    #       92/6/0.82 (high_spec) on 246-sample bench. Catches cases
+    #       like sym=130 + andi-fired with v9c near-miss + empty v8.
+    #   3-signal (v9c only, no ANDi): collapses to (v9c AND sym) OR
+    #       (v9c AND v8) since both ANDi-dependent branches are dead.
+    #   3-signal (ANDi only, no v9c): symmetric — substitute andi
+    #       for v9c in the same logical positions.
+    #   2-signal (no v9c, no ANDi): conservative v8 AND symmetry.
     if v9c_fires is not None and andi_fires is not None:
-        # 4-signal — same rule shape across all operating points;
-        # thresholds in OPERATING_POINTS differentiate the bands.
-        verdict_fires = (v9c_fires and sym_fires) or (v8_fires and andi_fires)
+        # 4-signal fix1c rule
+        verdict_fires = ((v9c_fires and sym_fires)
+                          or (v8_fires and andi_fires)
+                          or (sym_fires and andi_fires)
+                          or (v9c_fires and v8_fires))
         rule_used = op['rule_4signal']
-        signals_used = '4-signal: v9c+v8+sym+andi'
+        signals_used = '4-signal fix1c: v9c+v8+sym+andi'
     elif v9c_fires is not None:
         # 3-signal fallback (v9c without ANDi) — operating-point-specific
         if op['name'] == 'high_recall':

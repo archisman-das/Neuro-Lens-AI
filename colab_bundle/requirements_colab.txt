@@ -1,5 +1,9 @@
 # Colab pre-installs: torch, torchvision (newer than what we need),
-# numpy, pillow, scikit-image. We only need to add the segmentation
-# library and timm (which SMP uses for the ConvNeXt-Tiny encoder).
+# numpy, pillow, scikit-image, scipy. We add the segmentation library +
+# timm (SMP uses it for the ConvNeXt-Tiny encoder) + nibabel for NIfTI
+# loading (Method 1 + Method 2 of v9c CrossJEPA stream 3D volumes from
+# NIfTI on disk).
 segmentation-models-pytorch>=0.3.3
 timm>=0.9.16
+nibabel>=5.0
+huggingface_hub>=0.20

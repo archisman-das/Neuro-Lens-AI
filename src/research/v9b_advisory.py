@@ -631,5 +631,199 @@ def compute_advisory(image_rgb_uint8: np.ndarray,
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Model-insight visualizations (layperson-friendly heatmap overlays)
+# ---------------------------------------------------------------------------
+# Each neural anomaly signal aggregates a per-pixel/per-patch map to a
+# scalar before threshold-comparison. Keeping those maps and rendering
+# them as colored overlays on the original scan gives the layperson a
+# visual answer to "where does the AI think the unusual thing is?" —
+# at zero extra inference cost (we already computed the maps to derive
+# the scalars).
+
+
+_VIRIDIS_LUT = None
+
+
+def _viridis_lut() -> np.ndarray:
+    """256x3 uint8 LUT approximating matplotlib's viridis. Built once and
+    cached. Hand-tuned 8-stop gradient that hits the perceptually-uniform
+    waypoints of the real viridis well enough for visualization."""
+    global _VIRIDIS_LUT
+    if _VIRIDIS_LUT is not None:
+        return _VIRIDIS_LUT
+    stops = [
+        (0.00, ( 68,   1,  84)),   # deep purple
+        (0.14, ( 71,  44, 122)),
+        (0.29, ( 59,  81, 139)),
+        (0.43, ( 44, 113, 142)),
+        (0.57, ( 33, 144, 141)),
+        (0.71, ( 39, 173, 129)),
+        (0.86, (121, 209,  81)),
+        (1.00, (253, 231,  37)),   # bright yellow
+    ]
+    lut = np.zeros((256, 3), dtype=np.float32)
+    for i in range(256):
+        t = i / 255.0
+        for k in range(len(stops) - 1):
+            t0, c0 = stops[k]
+            t1, c1 = stops[k + 1]
+            if t0 <= t <= t1:
+                u = (t - t0) / max(t1 - t0, 1e-9)
+                lut[i] = np.array(c0) * (1 - u) + np.array(c1) * u
+                break
+    _VIRIDIS_LUT = lut.clip(0, 255).astype(np.uint8)
+    return _VIRIDIS_LUT
+
+
+def render_heatmap_overlay(image_rgb_uint8: np.ndarray,
+                            anomaly_map: np.ndarray,
+                            alpha: float = 0.55,
+                            target_hw: tuple = (256, 256),
+                            mask_below_pct: float = 50.0) -> np.ndarray:
+    """Render an anomaly map as a viridis colormap blended over the
+    grayscale brain image. Pixels below the `mask_below_pct` percentile
+    of the map are left as plain grayscale (so cold regions don't tint
+    the whole brain blue — only "interesting" pixels carry color).
+    Returns a (H, W, 3) uint8 RGB array ready to PNG-encode."""
+    from PIL import Image
+    # Resize both inputs to target_hw
+    base = Image.fromarray(image_rgb_uint8).convert('RGB').resize(
+        (target_hw[1], target_hw[0]), Image.BILINEAR)
+    base_arr = np.asarray(base, dtype=np.uint8)
+    src_map = Image.fromarray(anomaly_map.astype(np.float32)).resize(
+        (target_hw[1], target_hw[0]), Image.BILINEAR)
+    m = np.asarray(src_map, dtype=np.float32)
+    # Normalize to [0, 1]
+    m_min, m_max = float(m.min()), float(m.max())
+    if m_max - m_min < 1e-9:
+        return base_arr
+    norm = (m - m_min) / (m_max - m_min)
+    # Colormap lookup: indices = round(norm * 255)
+    lut = _viridis_lut()
+    idx = (norm * 255).clip(0, 255).astype(np.int32)
+    color = lut[idx]                              # (H, W, 3) uint8
+    # Soft-mask the dim pixels (below mask_below_pct% of normalized scale)
+    # back to grayscale — keeps the brain visible underneath cold regions
+    cold = (norm < (mask_below_pct / 100.0))
+    blend = (alpha * color.astype(np.float32)
+              + (1 - alpha) * base_arr.astype(np.float32)).clip(0, 255).astype(np.uint8)
+    out = blend.copy()
+    out[cold] = base_arr[cold]
+    return out
+
+
+def render_agreement_overlay(image_rgb_uint8: np.ndarray,
+                              fired_maps: list,
+                              target_hw: tuple = (256, 256)) -> np.ndarray:
+    """Render an "AI Agreement" overlay where pixels are colored by how
+    many of the supplied per-pixel firing-maps agree:
+        0 detectors flagged → grayscale background
+        1 detector flagged  → yellow tint (single-signal positive)
+        2+ detectors flagged → red tint (multi-signal positive — high
+                                          confidence anomaly region)
+
+    `fired_maps` is a list of bool/uint8 arrays (any shape, will be
+    resized to target_hw). Empty list → returns the plain base image.
+    """
+    from PIL import Image
+    base = Image.fromarray(image_rgb_uint8).convert('RGB').resize(
+        (target_hw[1], target_hw[0]), Image.BILINEAR)
+    base_arr = np.asarray(base, dtype=np.uint8)
+    if not fired_maps:
+        return base_arr
+    # Sum the binary maps (resized) -> per-pixel agreement count
+    agree = np.zeros(target_hw, dtype=np.int32)
+    for fm in fired_maps:
+        if fm is None:
+            continue
+        try:
+            src = Image.fromarray(fm.astype(np.uint8)).resize(
+                (target_hw[1], target_hw[0]), Image.NEAREST)
+            agree += (np.asarray(src) > 0).astype(np.int32)
+        except Exception:
+            continue
+    out = base_arr.copy()
+    # Single-agreement → amber tint
+    single = (agree == 1)
+    if single.any():
+        out[single] = (0.5 * np.array([245, 158, 11], dtype=np.uint8)
+                       + 0.5 * out[single]).astype(np.uint8)
+    # 2+ agreement → red tint (more saturated)
+    multi = (agree >= 2)
+    if multi.any():
+        out[multi] = (0.6 * np.array([220, 38, 38], dtype=np.uint8)
+                      + 0.4 * out[multi]).astype(np.uint8)
+    return out
+
+
+def compute_model_insight_maps(image_rgb_uint8: np.ndarray) -> dict:
+    """Compute the per-pixel/per-patch anomaly maps for every enabled
+    signal, plus a per-signal "fired-pixel" boolean map keyed on a
+    quick top-percentile threshold so the agreement composite knows
+    where each detector lit up.
+
+    Returns:
+      {
+        'v9c': {'map': (H,W) float, 'fired': (H,W) bool} or None,
+        'andi': {'map': (H,W) float, 'fired': (H,W) bool} or None,
+        'symmetry': {'map': (H,W) float, 'fired': (H,W) bool} or None,
+      }
+
+    Inference cost: free — the same forwards that produce the scalar
+    advisory scores also produce these maps; we just don't currently
+    return them from _run_v9c / _run_andi.
+    """
+    out = {}
+    # --- Symmetry (cheap, deterministic) ---
+    try:
+        from src.research.symmetry_geometry import symmetry_anomaly_map
+        sym_map = symmetry_anomaly_map(image_rgb_uint8, view='axial')
+        if sym_map is not None and sym_map.max() > 0:
+            # Fired pixels = top 3% of the asymmetry map
+            t = float(np.percentile(sym_map[sym_map > 0], 97))
+            out['symmetry'] = {'map': sym_map.astype(np.float32),
+                                'fired': (sym_map > t)}
+    except Exception:
+        pass
+    # --- v9c (per-patch prediction error) ---
+    if _v9c_enabled():
+        model = _load_v9c_model()
+        if model is not None:
+            try:
+                import torch
+                with torch.no_grad():
+                    emap = model.prediction_error_map([image_rgb_uint8])  # (1,1,224,224)
+                m = emap.squeeze().cpu().numpy().astype(np.float32)
+                t = float(np.percentile(m, 95))
+                out['v9c'] = {'map': m, 'fired': (m > t)}
+            except Exception:
+                pass
+    # --- ANDi (per-pixel DDPM error) ---
+    if _andi_enabled():
+        ddpm = _load_andi_model()
+        if ddpm is not None:
+            try:
+                import torch
+                from PIL import Image
+                from src.research.andi_inference import andi_anomaly_map
+                img = Image.fromarray(image_rgb_uint8).convert('RGB').resize(
+                    (256, 256), Image.BILINEAR)
+                arr = np.asarray(img, dtype=np.float32) / 255.0
+                x0 = torch.from_numpy(arr.transpose(2, 0, 1)).unsqueeze(0).to(_ANDI_DEVICE)
+                cond = torch.zeros(1, _ANDI_COND_DIM, device=_ANDI_DEVICE)
+                with torch.no_grad():
+                    amap = andi_anomaly_map(ddpm, x0, cond, t_low=75, t_high=200,
+                                             stride=5, device=_ANDI_DEVICE, seed=0)
+                m = amap.squeeze(0).max(dim=0).values.cpu().numpy().astype(np.float32)
+                t = float(np.percentile(m, 97))
+                out['andi'] = {'map': m, 'fired': (m > t)}
+            except Exception:
+                pass
+    return out
+
+
 __all__ = ['compute_advisory', 'OPERATING_POINTS',
-            'compute_anomaly_localization_map', 'synthesize_fallback_mask']
+            'compute_anomaly_localization_map', 'synthesize_fallback_mask',
+            'compute_model_insight_maps', 'render_heatmap_overlay',
+            'render_agreement_overlay']

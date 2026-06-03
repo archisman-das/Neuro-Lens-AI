@@ -1494,6 +1494,56 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 except Exception as exc:
                     result['mask_fallback_error'] = f'{type(exc).__name__}: {exc}'
 
+            # --- Model insight maps (layperson-friendly heatmaps) ----
+            # Renders per-signal anomaly heatmaps + an "AI Agreement"
+            # composite, attached as result['model_insights']. Used to
+            # fill the previously-empty right pane of the visualization
+            # panel with explanatory overlays. Cost: ~0 — the maps are
+            # already computed inside the advisory call; we just keep
+            # them and render to PNG instead of dropping after collapse
+            # to scalars.
+            if _img_rgb is not None and v9b is not None:
+                try:
+                    from src.research.v9b_advisory import (
+                        compute_model_insight_maps, render_heatmap_overlay,
+                        render_agreement_overlay)
+                    from PIL import Image as _PIL3
+                    import io as _io3
+                    insights = compute_model_insight_maps(_img_rgb)
+
+                    def _png_data_url2(rgb_arr):
+                        buf = _io3.BytesIO()
+                        _PIL3.fromarray(rgb_arr).save(buf, format='PNG')
+                        return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
+
+                    insight_payload = {
+                        'available_signals': sorted(insights.keys()),
+                        'maps': {},
+                    }
+                    fired_for_agreement = []
+                    for sig in ('v9c', 'andi', 'symmetry'):
+                        info = insights.get(sig)
+                        if info is None:
+                            insight_payload['maps'][sig] = None
+                            continue
+                        heat = render_heatmap_overlay(
+                            _img_rgb, info['map'], alpha=0.55,
+                            target_hw=(256, 256), mask_below_pct=50.0)
+                        insight_payload['maps'][sig] = {
+                            'overlay': _png_data_url2(heat),
+                            'fired_pct': round(100 * float(info['fired'].mean()), 2),
+                        }
+                        fired_for_agreement.append(info['fired'])
+                    # AI Agreement composite — pixels flagged by 2+ detectors
+                    agree_overlay = render_agreement_overlay(
+                        _img_rgb, fired_for_agreement, target_hw=(256, 256))
+                    insight_payload['agreement_overlay'] = _png_data_url2(agree_overlay)
+                    insight_payload['n_signals'] = len(fired_for_agreement)
+                    result['model_insights'] = insight_payload
+                except Exception as exc:
+                    result['model_insights'] = {'available': False,
+                                                 'reason': f'{type(exc).__name__}: {exc}'}
+
             self.respond_json(result)
         except Exception as exc:
             self.respond_json({'success': False, 'error': str(exc)}, status=500)

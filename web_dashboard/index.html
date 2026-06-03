@@ -701,6 +701,75 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Latent Anomaly Maps (NEW 2026-06-03d) -->
+                    <!-- Layperson-friendly visualizations of what each AI detector
+                         "sees". Each panel overlays a viridis heatmap on the brain
+                         scan so a non-radiologist can read "redder = the AI thinks
+                         this region looks unusual". -->
+                    <div class="results-panel" id="aiInsightPanel">
+                        <div class="panel-header">
+                            <h3>AI Insight Maps</h3>
+                            <div style="font-size:11px; color:#64748b; padding:2px 8px; border-radius:10px; background:rgba(99,102,241,0.10); border:1px solid rgba(99,102,241,0.30);">
+                                Layperson-friendly · &quot;where is the AI looking?&quot;
+                            </div>
+                        </div>
+                        <div class="panel-content">
+                            <!-- Color legend -->
+                            <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; font-size:12px; color:#475569;">
+                                <span>Looks normal</span>
+                                <div style="flex:1; height:10px; border-radius:5px; background:linear-gradient(90deg, #440154 0%, #3b528b 25%, #21918c 50%, #5ec962 75%, #fde725 100%);"></div>
+                                <span>Highly unusual</span>
+                            </div>
+
+                            <!-- Hero: AI Agreement Map -->
+                            <div id="agreementMapCard" style="margin-bottom:16px; padding:12px; border-radius:12px; background:linear-gradient(135deg, rgba(220,38,38,0.06) 0%, rgba(245,158,11,0.06) 100%); border:1.5px solid rgba(220,38,38,0.25);">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                    <strong style="color:#7f1d1d; font-size:14px;">AI Agreement Map</strong>
+                                    <span style="font-size:10px; padding:2px 8px; border-radius:8px; background:#fee2e2; color:#991b1b; font-weight:700; letter-spacing:0.5px;">RED = MULTIPLE DETECTORS AGREE</span>
+                                </div>
+                                <p style="margin:0 0 10px; font-size:12px; color:#64748b;">
+                                    Pixels in <span style="color:#dc2626; font-weight:600;">red</span> are flagged by 2 or more detectors &mdash; the most trustworthy regions to examine. <span style="color:#f59e0b; font-weight:600;">Amber</span> = flagged by just one detector (lower confidence).
+                                </p>
+                                <img id="agreementMapImage" src="" alt="AI Agreement Map" style="width:100%; max-width:320px; display:block; margin:0 auto; border-radius:8px; background:#f1f5f9;">
+                            </div>
+
+                            <!-- Per-detector heatmaps -->
+                            <div id="insightGrid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px;">
+
+                                <div class="insight-card" data-signal="v9c" style="padding:10px; border-radius:10px; background:rgba(255,255,255,0.7); border:1px solid rgba(0,0,0,0.06);">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <strong style="font-size:13px; color:#1e293b;">Pattern Detector</strong>
+                                        <span class="insight-pct" id="insight-v9c-pct" style="font-size:10px; color:#64748b;"></span>
+                                    </div>
+                                    <p style="margin:0 0 6px; font-size:11px; color:#64748b; line-height:1.4;">Checks each region against what healthy brains look like in a large self-supervised vision model.</p>
+                                    <img id="insightImage-v9c" src="" alt="Pattern Detector heatmap" style="width:100%; display:block; border-radius:6px; background:#f1f5f9;">
+                                </div>
+
+                                <div class="insight-card" data-signal="andi" style="padding:10px; border-radius:10px; background:rgba(255,255,255,0.7); border:1px solid rgba(0,0,0,0.06);">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <strong style="font-size:13px; color:#1e293b;">Reconstruction Detector</strong>
+                                        <span class="insight-pct" id="insight-andi-pct" style="font-size:10px; color:#64748b;"></span>
+                                    </div>
+                                    <p style="margin:0 0 6px; font-size:11px; color:#64748b; line-height:1.4;">A generative model tries to redraw each pixel from noise; this shows where it struggles most &mdash; usually unusual structure.</p>
+                                    <img id="insightImage-andi" src="" alt="Reconstruction Detector heatmap" style="width:100%; display:block; border-radius:6px; background:#f1f5f9;">
+                                </div>
+
+                                <div class="insight-card" data-signal="symmetry" style="padding:10px; border-radius:10px; background:rgba(255,255,255,0.7); border:1px solid rgba(0,0,0,0.06);">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <strong style="font-size:13px; color:#1e293b;">Asymmetry Detector</strong>
+                                        <span class="insight-pct" id="insight-symmetry-pct" style="font-size:10px; color:#64748b;"></span>
+                                    </div>
+                                    <p style="margin:0 0 6px; font-size:11px; color:#64748b; line-height:1.4;">Compares the left and right sides of the brain. Highlights where one side differs from its mirror &mdash; common with unilateral lesions.</p>
+                                    <img id="insightImage-symmetry" src="" alt="Asymmetry Detector heatmap" style="width:100%; display:block; border-radius:6px; background:#f1f5f9;">
+                                </div>
+                            </div>
+
+                            <div id="insightUnavailableNote" style="display:none; margin-top:14px; padding:10px 14px; border-radius:8px; background:#f8fafc; border:1px dashed #cbd5e1; font-size:12px; color:#64748b;">
+                                Some detector maps are unavailable because their signal isn't enabled on this Space. Set <code>V9C_ENABLE=1</code> + <code>V9B_ANDI_ENABLE=1</code> (with weight downloads) to populate them.
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Reliability metrics derived from the 3-classifier ensemble

@@ -458,6 +458,10 @@ class NeuroLensApp {
 
         // Render the 4-signal Ensemble Sources panel.
         this.renderEnsembleSignalsPanel(segR && segR.v9b_advisory);
+
+        // Render the AI Insight Maps panel (per-detector heatmaps +
+        // AI Agreement composite) in the previously-empty right pane.
+        this.renderAiInsightMaps(segR && segR.model_insights);
         
         // Update comparison table with real metrics from /metrics. Accuracy and
         // AUC come from the persisted JSONs, not from the live prediction.
@@ -652,6 +656,50 @@ class NeuroLensApp {
                 placeholder.textContent = this._gradcamUnavailableReason;
             }
         }
+    }
+
+    renderAiInsightMaps(insights) {
+        // Populates the "AI Insight Maps" panel (added 2026-06-03d).
+        // `insights` shape (from /segment response.model_insights):
+        //   { available_signals: [...], maps: { v9c: {overlay, fired_pct}, ... },
+        //     agreement_overlay: 'data:image/png;...', n_signals: N }
+        const panel = document.getElementById('aiInsightPanel');
+        if (!panel) return;
+        if (!insights || insights.available === false || !insights.maps) {
+            panel.style.display = 'none';
+            return;
+        }
+        panel.style.display = '';
+        // AI Agreement headline visual
+        const agreeImg = document.getElementById('agreementMapImage');
+        const agreeCard = document.getElementById('agreementMapCard');
+        if (insights.agreement_overlay) {
+            if (agreeImg) agreeImg.src = insights.agreement_overlay;
+            if (agreeCard) agreeCard.style.display = '';
+        } else if (agreeCard) {
+            agreeCard.style.display = 'none';
+        }
+        // Per-detector heatmaps
+        let anyMissing = false;
+        ['v9c', 'andi', 'symmetry'].forEach(sig => {
+            const card = panel.querySelector(`.insight-card[data-signal="${sig}"]`);
+            const img = document.getElementById(`insightImage-${sig}`);
+            const pct = document.getElementById(`insight-${sig}-pct`);
+            const data = insights.maps[sig];
+            if (data && data.overlay) {
+                if (card) card.style.display = '';
+                if (img) img.src = data.overlay;
+                if (pct) {
+                    pct.textContent = `${data.fired_pct}% flagged`;
+                    pct.style.color = data.fired_pct > 5 ? '#dc2626' : '#64748b';
+                }
+            } else {
+                if (card) card.style.display = 'none';
+                anyMissing = true;
+            }
+        });
+        const note = document.getElementById('insightUnavailableNote');
+        if (note) note.style.display = anyMissing ? 'block' : 'none';
     }
 
     renderEnsembleSignalsPanel(advisory) {

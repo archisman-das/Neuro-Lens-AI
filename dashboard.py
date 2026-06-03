@@ -1408,10 +1408,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # --- Localization fallback ---------------------------------
             # When v8 returned an empty mask but the ensemble verdict is
             # TUMOR (the diagonal blindspot case), derive a binary mask
-            # from whichever neural anomaly signal fired so the UI has
-            # something to display + MedSAM has a bbox to refine. The
-            # alternative is a confusing "TUMOR DETECTED but no mask"
-            # response that the user can't act on.
+            # from whichever neural anomaly signal fired, then run the
+            # same MedSAM refiner v8 would have triggered. End result:
+            # UI gets a full set of tabs (Coarse Mask/Overlay = amber
+            # anomaly-derived, Refined Mask/Overlay = MedSAM-refined,
+            # MedSAM Bbox = bbox prompt) just like a regular v8-positive
+            # response, instead of "TUMOR DETECTED but no mask".
             result['mask_source'] = 'v8'
             if (v9b is not None and _img_rgb is not None
                     and result.get('verdict') == 'TUMOR'
@@ -1430,15 +1432,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             map_info['map'], target_hw=target_hw,
                             percentile=97.0, min_area_px=30)
                         if fallback_mask is not None:
-                            # Render mask + overlay as data URLs matching v8's format
+                            # Render the fallback mask + amber overlay as
+                            # data URLs in v8's format so the rest of the
+                            # pipeline (MedSAM, UI rendering) sees them
+                            # as if v8 itself had produced them.
                             disp_img = _img.convert('RGB').resize(
                                 (target_hw[1], target_hw[0]), _PIL2.BILINEAR)
                             disp_arr = np.asarray(disp_img, dtype=np.uint8)
                             overlay = disp_arr.copy()
                             alpha = (fallback_mask > 0)
                             if alpha.any():
-                                # Amber tint to visually distinguish from
-                                # green v8 masks — signals "anomaly-derived"
+                                # Amber tint distinguishes anomaly-derived
+                                # masks from v8's green ones in the UI
                                 overlay[alpha] = (
                                     0.5 * np.array([245, 158, 11], dtype=np.uint8)
                                     + 0.5 * overlay[alpha]
@@ -1449,19 +1454,43 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 _PIL2.fromarray(np_img).save(buf, format='PNG')
                                 return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode('utf-8')
 
+                            # Replace v8's empty mask/overlay with the
+                            # fallback. _maybe_apply_medsam_refiner reads
+                            # result['mask'] as its coarse input, so this
+                            # gives MedSAM a non-empty bbox to refine.
                             result['mask'] = _png_data_url(fallback_mask * 255)
                             result['overlay'] = _png_data_url(overlay)
                             result['tumor_area_px'] = int(fallback_mask.sum())
                             result['mask_source'] = 'anomaly_fallback'
                             result['mask_fallback_signal'] = map_info['source']
                             result['mask_fallback_inference_ms'] = map_info.get('inference_ms', 0)
-                            # Mean prob doesn't apply to fallback; use the
-                            # signal value as a stand-in so the UI's
-                            # mean_prob_in_mask field still has data.
                             if map_info['source'] == 'andi':
                                 result['mean_prob_in_mask'] = float(v9b.get('andi_max', 0))
                             else:
                                 result['mean_prob_in_mask'] = float(v9b.get('v9c_p95', 0))
+
+                            # Re-invoke the MedSAM refiner on the fallback
+                            # mask. The refiner moves the current
+                            # mask/overlay to coarse_mask/coarse_overlay
+                            # and replaces mask/overlay with the refined
+                            # output, plus populates medsam_refiner.bbox_overlay
+                            # for the MedSAM Bbox tab. So after this call
+                            # the UI tabs are all populated:
+                            #   Coarse Mask/Overlay     = our amber fallback
+                            #   Refined Mask/Overlay    = MedSAM result
+                            #   MedSAM Bbox             = bbox prompt overlay
+                            try:
+                                _maybe_apply_medsam_refiner(result, file_item['content'])
+                            except Exception:
+                                # MedSAM is non-essential — if it fails,
+                                # leave the amber fallback as both coarse
+                                # AND refined so the UI still has visuals.
+                                result['coarse_mask'] = result['mask']
+                                result['coarse_overlay'] = result['overlay']
+                                result.setdefault('medsam_refiner', {
+                                    'enabled': True, 'available': False,
+                                    'reason': 'medsam_failed_on_fallback',
+                                })
                 except Exception as exc:
                     result['mask_fallback_error'] = f'{type(exc).__name__}: {exc}'
 

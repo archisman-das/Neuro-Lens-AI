@@ -23,6 +23,8 @@ BUNDLE_FILES = [
     'colab_bundle/__init__.py',
     'colab_bundle/requirements_colab.txt',
     'colab_bundle/v9b_colab_train.ipynb',
+    'colab_bundle/v9c_crossjepa_train.ipynb',          # Method 1 trainer
+    'colab_bundle/v9c_crossjepa_method2_train.ipynb',  # Method 2 trainer (2-phase)
 ]
 
 # src/ files unzipped into /content/neurolens/src/ on the Colab VM. After
@@ -58,6 +60,21 @@ SRC_FILES = [
     'src/research/v9b_advisory.py',       # end-to-end advisory wrapper.
     'src/research/v9c_dinov2_jepa.py',    # NEW (June 2026): v9c model
                                           # (frozen DINOv2 + JEPA predictor).
+    # --- v9c CrossJEPA scaffold (June 2026, proposal: v9c_crossjepa_modal.md) ---
+    # 3D-volume->2D-slice + modality->modality CrossJEPA towers, frozen
+    # v8 ConvNeXt-Tiny teacher (Method 1) and 4 per-modality I-JEPA
+    # teachers (Method 2). Trainable via the two src/train_v9c_method*
+    # scripts below.
+    'src/research/v9c_crossjepa/__init__.py',
+    'src/research/v9c_crossjepa/conditioning.py',
+    'src/research/v9c_crossjepa/caching.py',
+    'src/research/v9c_crossjepa/v8_teacher.py',
+    'src/research/v9c_crossjepa/vit_3d.py',
+    'src/research/v9c_crossjepa/volume_to_slice.py',
+    'src/research/v9c_crossjepa/modality_to_modality.py',
+    'src/research/v9c_crossjepa/dataset_3d.py',
+    'src/train_v9c_method1_vol2slice.py',
+    'src/train_v9c_method2_mod2mod.py',
 ]
 
 

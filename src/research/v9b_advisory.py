@@ -261,14 +261,17 @@ def _run_andi(image_rgb_uint8: np.ndarray) -> dict:
 
 
 def _operating_point() -> dict:
-    # Default is 'high_recall' by deliberate clinical-safety choice:
-    # missing a tumor is far worse than flagging a healthy scan, since a
-    # low-confidence FP can be ruled out by human review of the same image.
-    # Override via V9B_OPERATING_POINT={balanced, high_specificity} for
-    # deployments where reviewer bandwidth is the binding constraint.
-    name = os.environ.get('V9B_OPERATING_POINT', 'high_recall').strip().lower()
+    # Default is 'balanced' (97% recall / 6% FPR / 0.83 F1 on the
+    # 246-sample bench). Catches 35/36 tumors while keeping the FP rate
+    # under 10% so reviewer alert volume stays manageable.
+    #
+    # Override via V9B_OPERATING_POINT=high_recall for a zero-misses
+    # deployment (100% recall / 14% FPR / 0.71 F1 — catches the last
+    # tumor but ~17 more FPs to review), or =high_specificity for
+    # max-precision (92% recall / 4% FPR / 0.85 F1).
+    name = os.environ.get('V9B_OPERATING_POINT', 'balanced').strip().lower()
     if name not in OPERATING_POINTS:
-        name = 'high_recall'
+        name = 'balanced'
     return {'name': name, **OPERATING_POINTS[name]}
 
 
@@ -443,21 +446,22 @@ def compute_advisory(image_rgb_uint8: np.ndarray,
     verdict = 'TUMOR' if verdict_fires else 'no_tumor'
     rule = rule_used
 
-    # Confidence + review guidance. At high_recall the rule is tuned for
-    # 100% recall at the cost of ~14% FPR. ~3 in 10 TUMOR verdicts are
-    # expected to be FPs that a radiologist rules out by review. Flag
-    # low-confidence positives (only one branch of the OR fired) so the
-    # UI surfaces a clear "human review recommended" hint.
+    # Confidence + review guidance. balanced (default) gets 73% precision
+    # on the 246-sample bench, so ~1 in 4 TUMOR verdicts is an FP that a
+    # radiologist rules out by review. Flag low-confidence positives
+    # (only one branch of the OR fired) regardless of operating point —
+    # FPs at any tier should surface a clear "human review recommended"
+    # hint, since FPs are the failure mode the human is actually catching.
     fire_count = (int(bool(sym_fires)) + int(bool(v8_fires))
                   + int(v9c_fires is True) + int(andi_fires is True))
     if verdict == 'TUMOR':
         # 2+ signals firing = high confidence (both branches of the OR
         # likely fired). 1 signal = low confidence — escalate review.
         confidence = 'high' if fire_count >= 2 else 'low'
-        review_recommended = (op['name'] == 'high_recall' and confidence == 'low')
+        review_recommended = (confidence == 'low')
     else:
-        # Negative verdicts at high_recall are very reliable (100% recall
-        # ⇒ NPV essentially 100% in-bench).
+        # Negative verdicts are very reliable across all three OPs
+        # (recall ≥92%, so NPV stays high regardless of which tier).
         confidence = 'high'
         review_recommended = False
 

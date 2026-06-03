@@ -113,13 +113,45 @@ def _slice_volume(volume: np.ndarray, plane: str, idx: int) -> np.ndarray:
     raise ValueError(f'unknown plane: {plane!r}')
 
 
-def _slice_to_rgb_uint8(slice_arr: np.ndarray) -> np.ndarray:
-    """(H, W) float in [0, 1] -> (H, W, 3) uint8 for the v8 teacher."""
+def _slice_to_rgb_uint8(slice_arr: np.ndarray,
+                          target_hw: Optional[tuple] = None) -> np.ndarray:
+    """(H, W) float in [0, 1] -> (H', W', 3) uint8 for the v8 teacher.
+
+    If target_hw is provided, the slice is resized (bilinear) to that
+    shape. This is important when collating slices from different planes
+    of a non-cube volume: axial / sagittal / coronal each give different
+    (H, W) and torch.stack would fail without a common shape.
+    """
     if slice_arr.ndim == 3 and slice_arr.shape[-1] in (1, 3, 4):
-        # Multi-channel slice — drop to single channel for v8
         slice_arr = slice_arr[..., 0]
     arr = (slice_arr.clip(0, 1) * 255.0).astype(np.uint8)
+    if target_hw is not None and arr.shape != tuple(target_hw):
+        try:
+            from PIL import Image as _Img
+            arr = np.asarray(
+                _Img.fromarray(arr).resize((target_hw[1], target_hw[0]),
+                                              _Img.BILINEAR),
+                dtype=np.uint8)
+        except ImportError:
+            # PIL not available — pad/crop fallback
+            arr = _center_crop_pad_2d(arr, target_hw)
     return np.stack([arr, arr, arr], axis=-1)
+
+
+def _center_crop_pad_2d(arr: np.ndarray, target: tuple) -> np.ndarray:
+    """Center-crop or zero-pad a 2D array to `target` (h, w)."""
+    th, tw = target
+    h, w = arr.shape
+    out = np.zeros(target, dtype=arr.dtype)
+    src_h0 = max(0, (h - th) // 2)
+    src_w0 = max(0, (w - tw) // 2)
+    dst_h0 = max(0, (th - h) // 2)
+    dst_w0 = max(0, (tw - w) // 2)
+    copy_h = min(h - src_h0, th - dst_h0)
+    copy_w = min(w - src_w0, tw - dst_w0)
+    out[dst_h0:dst_h0 + copy_h, dst_w0:dst_w0 + copy_w] = (
+        arr[src_h0:src_h0 + copy_h, src_w0:src_w0 + copy_w])
+    return out
 
 
 class Vol2SliceDataset(IterableDataset):
@@ -142,7 +174,8 @@ class Vol2SliceDataset(IterableDataset):
                  in_channels: int = 1,
                  slices_per_volume: int = 6, hist_dim: int = 48,
                  planes: Sequence[str] = PLANES, seed: int = 0,
-                 shuffle: bool = True):
+                 shuffle: bool = True,
+                 slice_resize_hw: Tuple[int, int] = (256, 256)):
         super().__init__()
         self.scan_paths = list(scan_paths)
         self.volume_size = volume_size
@@ -152,6 +185,12 @@ class Vol2SliceDataset(IterableDataset):
         self.planes = tuple(planes)
         self.rng = random.Random(seed)
         self.shuffle = shuffle
+        # All extracted 2D slices are resized to this shape so axial,
+        # sagittal, coronal extractions from a non-cube volume stack
+        # cleanly in a DataLoader batch. v8 teacher resizes to 384
+        # internally; 256 is a reasonable intermediate that keeps file
+        # transfer small without losing the structure.
+        self.slice_resize_hw = tuple(slice_resize_hw)
 
     def __iter__(self) -> Iterator[dict]:
         paths = list(self.scan_paths)
@@ -176,7 +215,8 @@ class Vol2SliceDataset(IterableDataset):
                 lo, hi = int(0.2 * n_slices), int(0.8 * n_slices)
                 idx = self.rng.randint(lo, max(lo, hi - 1))
                 slice_2d = _slice_volume(vol, plane, idx)
-                slice_rgb = _slice_to_rgb_uint8(slice_2d)
+                slice_rgb = _slice_to_rgb_uint8(slice_2d,
+                                                  target_hw=self.slice_resize_hw)
                 hist = _intensity_histogram(slice_2d, n_bins=self.hist_dim)
                 # Volume tensor: (C, D, H, W). For single-channel volumes
                 # we replicate to in_channels to match the model's

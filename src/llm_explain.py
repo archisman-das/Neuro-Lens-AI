@@ -118,10 +118,10 @@ def _advisory_summary(advisory: dict) -> dict:
     """
     signal_states = []
     for label, fired_key, value_key in (
-        ('v9c (DINOv2+JEPA)',     'v9c_fired',      'v9c_p95'),
-        ('ANDi DDPM',              'andi_fired',     'andi_max'),
-        ('v8 segmentation',        'v8_fired',       'v8_area_px'),
-        ('symmetry geometry',      'symmetry_fired', 'symmetry_p95'),
+        ('Pattern Detector',        'v9c_fired',      'v9c_p95'),
+        ('Reconstruction Detector', 'andi_fired',     'andi_max'),
+        ('Tumor Outline Drawer',    'v8_fired',       'v8_area_px'),
+        ('Asymmetry Detector',      'symmetry_fired', 'symmetry_p95'),
     ):
         fired = advisory.get(fired_key)
         value = advisory.get(value_key)

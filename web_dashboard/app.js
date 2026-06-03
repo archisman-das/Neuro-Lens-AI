@@ -429,17 +429,18 @@ class NeuroLensApp {
             : advVerdict === 'no_tumor' ? 'NO TUMOR'
             : results.diagnosis;
         document.getElementById('diagnosisDetail').textContent =
-            advReview ? 'Low-confidence positive · radiologist review recommended'
-            : (advConfidence ? `${advConfidence} confidence ensemble verdict` : 'Requires clinical review');
+            advReview ? 'Low-confidence positive — a radiologist should review this scan'
+            : (advConfidence === 'high' ? 'High confidence — multiple AI detectors agreed'
+              : advConfidence === 'low' ? 'Lower confidence — only one detector branch agreed'
+              : 'Requires clinical review');
 
         // Confidence card: show ensemble confidence band when available,
         // else fall back to the legacy classifier-derived confidence float.
         const confEl = document.getElementById('confidenceValue');
         const confFillEl = document.getElementById('confidenceFill');
         if (advConfidence) {
-            confEl.textContent = advConfidence.toUpperCase();
-            // Map high -> 90%, low -> 45% as a visual cue. Real recall/FPR
-            // depend on the operating point and the rule branches that fired.
+            confEl.textContent = advConfidence === 'high' ? 'HIGH' : 'LOW';
+            // Map high -> 90%, low -> 45% as a visual cue.
             const w = advConfidence === 'high' ? 90 : 45;
             confFillEl.style.width = `${w}%`;
         } else {
@@ -715,13 +716,27 @@ class NeuroLensApp {
         card.style.display = 'block';
 
         const setT = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-        setT('ensembleRule', advisory.rule || '--');
-        setT('ensembleOp', advisory.operating_point || '--');
+        // Decision rule: layperson-friendly text in the visible label,
+        // technical Boolean rule in the hover title for researchers.
+        const ruleEl = document.getElementById('ensembleRule');
+        if (ruleEl) {
+            ruleEl.textContent = advisory.rule || '--';
+            if (advisory.rule_technical) {
+                ruleEl.title = `Technical rule: ${advisory.rule_technical}`;
+            }
+        }
+        // Mode: prefer the layperson display_name ("Balanced") over the
+        // internal slug ("balanced") when available.
+        setT('ensembleOp', advisory.operating_point_display || advisory.operating_point || '--');
         const m = advisory.measured_performance || {};
-        const reFmt = (v) => (v == null ? '--' : `${(v * 100).toFixed(0)}%`);
-        const f1Fmt = (v) => (v == null ? '--' : v.toFixed(2));
+        const pctFmt = (v) => (v == null ? '--' : `${v}%`);
+        const scoreFmt = (v) => (v == null ? '--' : Number(v).toFixed(2));
+        // Layperson metric labels: "% of tumors caught", "% of healthy
+        // scans wrongly flagged", "overall accuracy".
         setT('ensembleMeasured',
-            `measured ${reFmt(m.ood_recall)} recall / ${reFmt(m.ood_fpr)} FPR / ${f1Fmt(m.ood_f1)} F1`);
+            `On our test set: ${pctFmt(m.tumors_caught_pct)} of tumors caught, `
+            + `${pctFmt(m.healthy_wrongly_flagged_pct)} of healthy scans wrongly flagged, `
+            + `accuracy ${scoreFmt(m.overall_accuracy_score)}`);
 
         const reviewBadge = document.getElementById('reviewBadge');
         if (reviewBadge) {
@@ -734,15 +749,16 @@ class NeuroLensApp {
             const thrEl = document.getElementById(`sig-${sigKey}-thresh`);
             if (stateEl) {
                 if (fired === true) {
-                    stateEl.textContent = 'FIRED';
+                    // Layperson: "Flagged this scan" instead of "FIRED"
+                    stateEl.textContent = 'Flagged';
                     stateEl.style.background = '#d1fae5';
                     stateEl.style.color = '#065f46';
                 } else if (fired === false) {
-                    stateEl.textContent = 'silent';
+                    stateEl.textContent = 'Did not flag';
                     stateEl.style.background = '#e5e7eb';
                     stateEl.style.color = '#475569';
                 } else {
-                    stateEl.textContent = 'off';
+                    stateEl.textContent = 'Not active';
                     stateEl.style.background = '#f3f4f6';
                     stateEl.style.color = '#94a3b8';
                 }
@@ -769,15 +785,23 @@ class NeuroLensApp {
         }
         panel.style.display = '';
         if (!ms.available) {
-            setT('medsamStatus', `unavailable: ${ms.reason || 'unknown'}`);
+            setT('medsamStatus', `not available (${ms.reason || 'unknown reason'})`);
             setT('medsamCoarse', '--'); setT('medsamRefined', '--');
             setT('medsamDelta', '--'); setT('medsamIou', '--'); setT('medsamMs', '--');
             return;
         }
         if (ms.skipped_reason) {
-            setT('medsamStatus', `skipped: ${ms.skipped_reason}`);
+            // Translate common technical skip reasons to plain language.
+            const friendlyReason = (
+                ms.skipped_reason === 'empty_coarse_mask'
+                    ? 'no initial tumor detected, nothing to refine'
+                : ms.skipped_reason === 'no_mask_to_refine'
+                    ? 'no initial mask was provided'
+                : ms.skipped_reason
+            );
+            setT('medsamStatus', `Skipped — ${friendlyReason}`);
         } else {
-            setT('medsamStatus', `active (${ms.model || 'MedSAM ViT-B'})`);
+            setT('medsamStatus', 'Active');
         }
         setT('medsamCoarse', (ms.coarse_area_px != null) ? `${ms.coarse_area_px} px` : '--');
         setT('medsamRefined', (ms.refined_area_px != null) ? `${ms.refined_area_px} px` : '--');

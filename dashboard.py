@@ -994,10 +994,10 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
                 if v9b.get('review_recommended'):
                     seg['requires_human_review'] = True
                     seg.setdefault('requires_human_review_reason',
-                        f'Ensemble rule "{v9b.get("rule", "ensemble")}" flagged TUMOR '
-                        f'with low confidence (one signal branch). Radiologist review '
-                        f'recommended to rule out a possible false positive at the '
-                        f'{v9b.get("operating_point", "balanced")} operating point.')
+                        f'Only one detector branch fired, so this is a low-confidence '
+                        f'positive. A radiologist should review the scan to rule out '
+                        f'a false alarm (currently running in '
+                        f'"{v9b.get("operating_point_display", "Balanced")}" mode).')
         except Exception as exc:
             seg['v9b_advisory'] = {'enabled': False, 'reason': f'wire-up failed: {exc}'}
 
@@ -1103,8 +1103,8 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
     else:
         verdict_top = 'TUMOR' if int(seg.get('tumor_area_px', 0) or 0) >= 50 else 'no_tumor'
         confidence_top = 'high'
-        rule_top = 'v8 area >= 50 px (advisory unavailable)'
-        signals_used_top = '1-signal: v8'
+        rule_top = 'Tumor Outline Drawer found >= 50 pixels of tumor area'
+        signals_used_top = '1 detector active: Tumor Outline Drawer'
         operating_point_top = 'fallback'
         review_recommended_top = False
 
@@ -1400,8 +1400,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 result.setdefault('verdict',
                     'TUMOR' if int(result.get('tumor_area_px', 0) or 0) >= 50 else 'no_tumor')
                 result.setdefault('confidence', 'high')
-                result.setdefault('rule', 'v8 area >= 50 px (advisory unavailable)')
-                result.setdefault('signals_used', '1-signal: v8')
+                result.setdefault('rule', 'Tumor Outline Drawer found >= 50 pixels of tumor area')
+                result.setdefault('signals_used', '1 detector active: Tumor Outline Drawer')
                 result.setdefault('operating_point', 'fallback')
                 result.setdefault('review_recommended', False)
 
@@ -1741,8 +1741,9 @@ def _get_status_snapshot() -> dict:
         'Verdict now from the 4-signal advisory (v9c + ANDi + v8 + '
         'symmetry) — 97% recall / 6% FPR at the balanced operating point.'
     )
-    snap['verdict_source'] = 'advisory_4signal'
-    snap['advisory_signals'] = ['v9c (DINOv2+JEPA)', 'ANDi DDPM', 'v8 segmentation', 'symmetry geometry']
+    snap['verdict_source'] = '4-detector ensemble'
+    snap['advisory_signals'] = ['Pattern Detector', 'Reconstruction Detector',
+                                  'Tumor Outline Drawer', 'Asymmetry Detector']
     snap['advisory_operating_points'] = {
         'balanced (default)': '97% recall / 6% FPR / 0.83 F1',
         'high_recall': '100% recall / 14% FPR / 0.71 F1',

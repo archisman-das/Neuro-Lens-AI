@@ -460,63 +460,63 @@
                     </div>
                 </div>
 
-                <!-- Four-Signal Ensemble Sources (NEW 2026-06-03b) -->
+                <!-- AI Detector Summary (renamed 2026-06-03e for laypeople) -->
                 <div id="ensembleSignalsCard" style="display:none; margin:20px 0; padding:20px; border-radius:14px; background:linear-gradient(135deg, rgba(16,185,129,0.08) 0%, rgba(59,130,246,0.08) 100%); border:1.5px solid rgba(16,185,129,0.35); box-shadow:0 4px 18px rgba(16,185,129,0.08);">
                     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; margin-bottom:14px;">
                         <div>
                             <div style="display:flex; align-items:center; gap:10px;">
                                 <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#10b981;"></span>
-                                <h3 style="margin:0; font-size:17px; color:#065f46;">Four-Signal Ensemble Verdict</h3>
+                                <h3 style="margin:0; font-size:17px; color:#065f46;">AI Detector Summary</h3>
                             </div>
                             <p style="margin:6px 0 0; font-size:13px; color:#475569;">
-                                Rule: <code id="ensembleRule" style="font-size:12px; padding:2px 6px; background:rgba(0,0,0,0.04); border-radius:4px;">--</code>
-                                &middot; Operating point: <strong id="ensembleOp">--</strong>
+                                Decision rule: <span id="ensembleRule" title="Hover to see the technical rule" style="font-style:italic;">--</span><br>
+                                Mode: <strong id="ensembleOp">--</strong>
                                 &middot; <span id="ensembleMeasured" style="color:#64748b;">--</span>
                             </p>
                         </div>
                         <div id="reviewBadge" style="display:none; padding:6px 12px; border-radius:8px; background:#fef3c7; color:#92400e; font-size:12px; font-weight:600; border:1px solid #fcd34d;">
-                            Human review recommended
+                            Radiologist review recommended
                         </div>
                     </div>
                     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px;">
                         <div class="signal-card" id="sig-v9c" style="padding:12px; border-radius:10px; background:rgba(255,255,255,0.6); border:1px solid rgba(0,0,0,0.06);">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <strong style="font-size:13px; color:#1e293b;">v9c</strong>
+                                <strong style="font-size:13px; color:#1e293b;">Pattern Detector</strong>
                                 <span class="sig-state" id="sig-v9c-state" style="font-size:11px; padding:2px 8px; border-radius:12px; background:#e5e7eb; color:#475569;">--</span>
                             </div>
-                            <div style="font-size:11px; color:#64748b; margin-top:4px;">DINOv2 + JEPA predictor</div>
+                            <div style="font-size:11px; color:#64748b; margin-top:4px;">Compares regions to healthy brains</div>
                             <div style="font-size:12px; color:#0f172a; margin-top:6px;">
-                                p95 = <span id="sig-v9c-val">--</span> · thresh <span id="sig-v9c-thresh">--</span>
+                                Score: <span id="sig-v9c-val">--</span> &middot; Alert level: <span id="sig-v9c-thresh">--</span>
                             </div>
                         </div>
                         <div class="signal-card" id="sig-andi" style="padding:12px; border-radius:10px; background:rgba(255,255,255,0.6); border:1px solid rgba(0,0,0,0.06);">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <strong style="font-size:13px; color:#1e293b;">ANDi</strong>
+                                <strong style="font-size:13px; color:#1e293b;">Reconstruction Detector</strong>
                                 <span class="sig-state" id="sig-andi-state" style="font-size:11px; padding:2px 8px; border-radius:12px; background:#e5e7eb; color:#475569;">--</span>
                             </div>
-                            <div style="font-size:11px; color:#64748b; margin-top:4px;">Pyramidal-noise DDPM</div>
+                            <div style="font-size:11px; color:#64748b; margin-top:4px;">Tries to redraw the scan and flags struggles</div>
                             <div style="font-size:12px; color:#0f172a; margin-top:6px;">
-                                max = <span id="sig-andi-val">--</span> · thresh <span id="sig-andi-thresh">--</span>
+                                Score: <span id="sig-andi-val">--</span> &middot; Alert level: <span id="sig-andi-thresh">--</span>
                             </div>
                         </div>
                         <div class="signal-card" id="sig-v8" style="padding:12px; border-radius:10px; background:rgba(255,255,255,0.6); border:1px solid rgba(0,0,0,0.06);">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <strong style="font-size:13px; color:#1e293b;">v8</strong>
+                                <strong style="font-size:13px; color:#1e293b;">Tumor Outline Drawer</strong>
                                 <span class="sig-state" id="sig-v8-state" style="font-size:11px; padding:2px 8px; border-radius:12px; background:#e5e7eb; color:#475569;">--</span>
                             </div>
-                            <div style="font-size:11px; color:#64748b; margin-top:4px;">nnU-Net segmentation</div>
+                            <div style="font-size:11px; color:#64748b; margin-top:4px;">A medical AI trained to outline tumors</div>
                             <div style="font-size:12px; color:#0f172a; margin-top:6px;">
-                                area = <span id="sig-v8-val">--</span> px · thresh <span id="sig-v8-thresh">--</span>
+                                Tumor area: <span id="sig-v8-val">--</span> pixels &middot; Alert level: <span id="sig-v8-thresh">--</span> pixels
                             </div>
                         </div>
                         <div class="signal-card" id="sig-sym" style="padding:12px; border-radius:10px; background:rgba(255,255,255,0.6); border:1px solid rgba(0,0,0,0.06);">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <strong style="font-size:13px; color:#1e293b;">Symmetry</strong>
+                                <strong style="font-size:13px; color:#1e293b;">Asymmetry Detector</strong>
                                 <span class="sig-state" id="sig-sym-state" style="font-size:11px; padding:2px 8px; border-radius:12px; background:#e5e7eb; color:#475569;">--</span>
                             </div>
-                            <div style="font-size:11px; color:#64748b; margin-top:4px;">Axial geometry score</div>
+                            <div style="font-size:11px; color:#64748b; margin-top:4px;">Compares left vs right side of the brain</div>
                             <div style="font-size:12px; color:#0f172a; margin-top:6px;">
-                                p95 = <span id="sig-sym-val">--</span> · thresh <span id="sig-sym-thresh">--</span>
+                                Score: <span id="sig-sym-val">--</span> &middot; Alert level: <span id="sig-sym-thresh">--</span>
                             </div>
                         </div>
                     </div>
@@ -583,35 +583,35 @@
                 <div id="medsamPanel" style="display:none; margin:16px 0; padding:18px 22px; border-radius:14px; background:linear-gradient(135deg, rgba(34,197,94,0.10) 0%, rgba(20,184,166,0.10) 100%); border:1.5px solid rgba(34,197,94,0.45); box-shadow:0 4px 18px rgba(34,197,94,0.10);">
                     <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
                         <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#16a34a;"></span>
-                        <h3 style="margin:0; font-size:17px; color:#15803d;">MedSAM Boundary Refiner</h3>
-                        <span style="font-size:10px; font-weight:700; letter-spacing:0.5px; padding:2px 8px; border-radius:10px; background:#16a34a; color:white;">CASCADE</span>
+                        <h3 style="margin:0; font-size:17px; color:#15803d;">Tumor Boundary Refiner</h3>
+                        <span style="font-size:10px; font-weight:700; letter-spacing:0.5px; padding:2px 8px; border-radius:10px; background:#16a34a; color:white;">STEP 2</span>
                         <span id="medsamStatus" style="font-size:11px; opacity:0.7; margin-left:auto;">--</span>
                     </div>
                     <p style="margin:0 0 10px; font-size:13px; opacity:0.85;">
-                        Ma et al. <em>Nature Communications</em> 2024. SAM ViT-B finetuned on 1.5M medical
-                        image-mask pairs incl. BraTS. Re-draws the segmentation boundary at high resolution
-                        when prompted with the joint-trained segmenter's bbox. <strong>Mandatory on every
-                        positive scan;</strong> empty/no-tumor masks are passed through unchanged.
+                        After the Tumor Outline Drawer (or our anomaly-derived fallback) finds the rough
+                        tumor area, a second AI &mdash; trained on 1.5 million medical image-mask pairs &mdash;
+                        sharpens the boundary at higher resolution. This runs automatically on every
+                        positive scan and is skipped on scans that look healthy.
                     </p>
                     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
                         <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
-                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Coarse area</div>
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Initial detection size</div>
                             <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamCoarse">--</div>
                         </div>
                         <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
-                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Refined area</div>
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Refined size</div>
                             <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamRefined">--</div>
                         </div>
                         <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
-                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">&Delta;</div>
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Size change</div>
                             <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamDelta">--</div>
                         </div>
                         <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
-                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">IoU score</div>
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Agreement score</div>
                             <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamIou">--</div>
                         </div>
                         <div style="padding:8px 10px; background:rgba(255,255,255,0.6); border-radius:8px;">
-                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Latency</div>
+                            <div style="font-size:10px; opacity:0.7; text-transform:uppercase; letter-spacing:0.5px;">Refinement time</div>
                             <div style="font-size:15px; font-weight:700; color:#15803d;" id="medsamMs">--</div>
                         </div>
                     </div>
@@ -679,11 +679,11 @@
                                      autograd, classifier ensemble deprecated. -->
                                 <button class="tab-btn" data-view="heatmap" style="display:none !important;">Grad-CAM</button>
                                 <button class="tab-btn" data-view="overlay" style="display:none !important;">Grad-CAM Overlay</button>
-                                <button class="tab-btn" data-view="mask" title="MedSAM-refined mask (final, what radiologists see)">Refined Mask</button>
-                                <button class="tab-btn" data-view="segoverlay" title="MedSAM-refined overlay (final, what radiologists see)">Refined Overlay</button>
-                                <button class="tab-btn" data-view="coarse_mask" title="Raw v5 mask before MedSAM refinement">Coarse Mask</button>
-                                <button class="tab-btn" data-view="coarse_overlay" title="Raw v5 overlay before MedSAM refinement">Coarse Overlay</button>
-                                <button class="tab-btn" data-view="bbox_prompt" title="Yellow rectangle = exactly what region MedSAM was prompted to focus on">MedSAM Bbox</button>
+                                <button class="tab-btn" data-view="mask" title="The final boundary-refined tumor mask (this is what a clinician would review)">Refined Mask</button>
+                                <button class="tab-btn" data-view="segoverlay" title="The final tumor outline drawn on top of the scan">Refined Overlay</button>
+                                <button class="tab-btn" data-view="coarse_mask" title="The initial tumor detection before the boundary was refined">Initial Mask</button>
+                                <button class="tab-btn" data-view="coarse_overlay" title="The initial tumor outline on top of the scan, before refinement">Initial Overlay</button>
+                                <button class="tab-btn" data-view="bbox_prompt" title="Yellow rectangle = the region the AI focused on when refining the boundary">Detection Region</button>
                             </div>
                         </div>
                         <div class="panel-content">
@@ -692,11 +692,11 @@
                                 <img id="vizImage" src="" alt="Visualization">
                                 <img id="heatmapImage" src="" alt="Heatmap" style="display: none;">
                                 <img id="overlayImage" src="" alt="Overlay" style="display: none;">
-                                <img id="maskImage" src="" alt="Refined Mask (MedSAM)" style="display: none; background: black;">
-                                <img id="segoverlayImage" src="" alt="Refined Overlay (MedSAM)" style="display: none;">
-                                <img id="coarseMaskImage" src="" alt="Coarse Mask (v5)" style="display: none; background: black;">
-                                <img id="coarseOverlayImage" src="" alt="Coarse Overlay (v5)" style="display: none;">
-                                <img id="bboxPromptImage" src="" alt="MedSAM Bbox Prompt" style="display: none;">
+                                <img id="maskImage" src="" alt="Refined tumor mask" style="display: none; background: black;">
+                                <img id="segoverlayImage" src="" alt="Refined tumor overlay" style="display: none;">
+                                <img id="coarseMaskImage" src="" alt="Initial tumor mask" style="display: none; background: black;">
+                                <img id="coarseOverlayImage" src="" alt="Initial tumor overlay" style="display: none;">
+                                <img id="bboxPromptImage" src="" alt="Detection region prompt" style="display: none;">
                                 <div id="vizPlaceholder" class="viz-placeholder" style="display:none;"></div>
                             </div>
                         </div>
@@ -766,7 +766,7 @@
                             </div>
 
                             <div id="insightUnavailableNote" style="display:none; margin-top:14px; padding:10px 14px; border-radius:8px; background:#f8fafc; border:1px dashed #cbd5e1; font-size:12px; color:#64748b;">
-                                Some detector maps are unavailable because their signal isn't enabled on this Space. Set <code>V9C_ENABLE=1</code> + <code>V9B_ANDI_ENABLE=1</code> (with weight downloads) to populate them.
+                                Some detectors aren't enabled on this server, so their heatmaps don't appear here. The Asymmetry Detector always runs; the Pattern Detector and Reconstruction Detector require GPU-backed deployments.
                             </div>
                         </div>
                     </div>
@@ -1386,6 +1386,6 @@
         </div>
     </footer>
 
-    <script src="app.js?v=ai-insights-v1"></script>
+    <script src="app.js?v=layperson-v1"></script>
 </body>
 </html>

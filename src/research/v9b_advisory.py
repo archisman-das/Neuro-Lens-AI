@@ -67,59 +67,85 @@ import numpy as np
 # Default = 'balanced' (97% recall / 9% FPR / 0.78 F1). Use high_recall
 # for zero-misses deployments (100/17) or high_specificity for max precision
 # (92/6).
+# Layperson-facing display strings shared across all operating points.
+# `_4signal` is what appears in the UI when all four detectors are active.
+# `_technical` is the formal Boolean rule, surfaced only as a hover/tooltip
+# for developers + researchers who want to see the actual gate.
+_RULE_DISPLAY_4SIGNAL = ('At least 2 of 4 detectors must agree on the same '
+                         'region (Pattern + Asymmetry, Outline Drawer + '
+                         'Reconstruction, Asymmetry + Reconstruction, or '
+                         'Pattern + Outline Drawer).')
+_RULE_TECHNICAL_4SIGNAL = ('(Pattern AND Asymmetry) OR (Outline AND Reconstruction) '
+                          'OR (Asymmetry AND Reconstruction) OR (Pattern AND Outline)')
+_RULE_DISPLAY_3SIGNAL_NO_ANDI = ('Pattern Detector must fire AND either Asymmetry '
+                                  'or the Outline Drawer must agree.')
+_RULE_DISPLAY_2SIGNAL = ('Tumor Outline Drawer AND Asymmetry Detector must '
+                          'both fire (the most conservative fallback).')
+
 OPERATING_POINTS = {
-    # CAN'T SLIP A TUMOR. Measured 100% recall / 17% FPR / 0.67 F1 on
-    # the 246-sample bench. Catches every tumor including the
-    # diagonal-firing failure case. Use for any deployment where missing
-    # a tumor is unacceptable; ~5 in 10 TUMOR verdicts are FPs that a
-    # radiologist rules out by review.
+    # "Catch Every Tumor" mode — 100% recall / 17% FPR / 0.67 F1 on the
+    # 246-sample bench. Catches every tumor including the diagonal-firing
+    # failure case. Use when missing a tumor is unacceptable; ~5 in 10
+    # tumor verdicts are false alarms that a radiologist rules out.
     'high_recall': {
+        'display_name': 'Catch Every Tumor',
+        'display_description': ('Sensitivity-first mode. Flags every tumor in '
+                                 'our test set, but ~50% of positive verdicts '
+                                 'are false alarms a radiologist must rule out.'),
         'v9c_threshold': 0.582,
         'v8_area_threshold': 49,
         'symmetry_threshold': 111.0,
         'andi_threshold': 1.699e-04,
-        'jepa_threshold': 0.489,   # legacy v9b path, kept for compat
-        'rule_4signal':    '(v9c AND sym) OR (v8 AND andi) OR (sym AND andi) OR (v9c AND v8)',
-        'rule_with_v9c':   '(v9c AND sym) OR (v9c AND v8)',     # ANDi-disabled fallback
-        'rule_without_v9c': 'v8 AND symmetry',                   # 2-signal fallback
+        'jepa_threshold': 0.489,   # legacy path, kept for compat
+        'rule_4signal':    _RULE_DISPLAY_4SIGNAL,
+        'rule_with_v9c':   _RULE_DISPLAY_3SIGNAL_NO_ANDI,
+        'rule_without_v9c': _RULE_DISPLAY_2SIGNAL,
+        'rule_technical':  _RULE_TECHNICAL_4SIGNAL,
         'measured': {
-            'ood_recall': 1.00, 'ood_fpr': 0.17, 'ood_f1': 0.67,
-            'cohort': '246-sample OOD bench (June 2026)',
-            'with_signals': '4-signal fix1c: v9c+v8+sym+andi',
+            'tumors_caught_pct': 100, 'healthy_wrongly_flagged_pct': 17,
+            'overall_accuracy_score': 0.67,
+            'cohort_description': '246 brain scans (36 with tumors, 210 healthy)',
         },
     },
-    # Reviewer-friendly tier (default). Measured 97% recall / 9% FPR /
-    # 0.78 F1. Closes the diagonal blindspot at the cost of 3 pp FPR
-    # vs the prior 97/6/0.83 baseline that missed those cases.
+    # "Balanced" mode (default) — 97% recall / 9% FPR / 0.78 F1.
     'balanced': {
+        'display_name': 'Balanced',
+        'display_description': ('Default mode. Catches 97 of 100 tumors with '
+                                 'about 9 false alarms per 100 healthy scans.'),
         'v9c_threshold': 0.709,
         'v8_area_threshold': 49,
         'symmetry_threshold': 111.0,
         'andi_threshold': 1.36e-04,
         'jepa_threshold': 0.490,
-        'rule_4signal':    '(v9c AND sym) OR (v8 AND andi) OR (sym AND andi) OR (v9c AND v8)',
-        'rule_with_v9c':   '(v9c AND sym) OR (v9c AND v8)',
-        'rule_without_v9c': 'v8 AND symmetry',
+        'rule_4signal':    _RULE_DISPLAY_4SIGNAL,
+        'rule_with_v9c':   _RULE_DISPLAY_3SIGNAL_NO_ANDI,
+        'rule_without_v9c': _RULE_DISPLAY_2SIGNAL,
+        'rule_technical':  _RULE_TECHNICAL_4SIGNAL,
         'measured': {
-            'ood_recall': 0.97, 'ood_fpr': 0.09, 'ood_f1': 0.78,
-            'cohort': '246-sample OOD bench (June 2026)',
-            'with_signals': '4-signal fix1c: v9c+v8+sym+andi',
+            'tumors_caught_pct': 97, 'healthy_wrongly_flagged_pct': 9,
+            'overall_accuracy_score': 0.78,
+            'cohort_description': '246 brain scans (36 with tumors, 210 healthy)',
         },
     },
-    # Highest precision. Measured 92% recall / 6% FPR / 0.82 F1.
+    # "Maximum Precision" mode — 92% recall / 6% FPR / 0.82 F1.
     'high_specificity': {
+        'display_name': 'Maximum Precision',
+        'display_description': ('Precision-first mode. Reduces false alarms to '
+                                 '~6 per 100 healthy scans, at the cost of '
+                                 'missing ~8 of 100 tumors.'),
         'v9c_threshold': 0.709,
         'v8_area_threshold': 49,
         'symmetry_threshold': 121.0,
         'andi_threshold': 1.36e-04,
         'jepa_threshold': 0.449,
-        'rule_4signal':    '(v9c AND sym) OR (v8 AND andi) OR (sym AND andi) OR (v9c AND v8)',
-        'rule_with_v9c':   '(v9c AND sym) OR (v9c AND v8)',
-        'rule_without_v9c': 'symmetry AND v8',
+        'rule_4signal':    _RULE_DISPLAY_4SIGNAL,
+        'rule_with_v9c':   _RULE_DISPLAY_3SIGNAL_NO_ANDI,
+        'rule_without_v9c': _RULE_DISPLAY_2SIGNAL,
+        'rule_technical':  _RULE_TECHNICAL_4SIGNAL,
         'measured': {
-            'ood_recall': 0.92, 'ood_fpr': 0.06, 'ood_f1': 0.82,
-            'cohort': '246-sample OOD bench (June 2026)',
-            'with_signals': '4-signal fix1c: v9c+v8+sym+andi',
+            'tumors_caught_pct': 92, 'healthy_wrongly_flagged_pct': 6,
+            'overall_accuracy_score': 0.82,
+            'cohort_description': '246 brain scans (36 with tumors, 210 healthy)',
         },
     },
 }
@@ -526,15 +552,15 @@ def compute_advisory(image_rgb_uint8: np.ndarray,
     #       for v9c in the same logical positions.
     #   2-signal (no v9c, no ANDi): conservative v8 AND symmetry.
     if v9c_fires is not None and andi_fires is not None:
-        # 4-signal fix1c rule
+        # All four detectors active
         verdict_fires = ((v9c_fires and sym_fires)
                           or (v8_fires and andi_fires)
                           or (sym_fires and andi_fires)
                           or (v9c_fires and v8_fires))
         rule_used = op['rule_4signal']
-        signals_used = '4-signal fix1c: v9c+v8+sym+andi'
+        signals_used = 'All 4 detectors active: Pattern, Reconstruction, Outline Drawer, Asymmetry'
     elif v9c_fires is not None:
-        # 3-signal fallback (v9c without ANDi) — operating-point-specific
+        # 3-detector fallback (no Reconstruction Detector / ANDi)
         if op['name'] == 'high_recall':
             verdict_fires = (v9c_fires or v8_fires) and sym_fires
         elif op['name'] == 'balanced':
@@ -544,10 +570,9 @@ def compute_advisory(image_rgb_uint8: np.ndarray,
         else:
             verdict_fires = sym_fires or v8_fires or v9c_fires
         rule_used = op['rule_with_v9c']
-        signals_used = '3-signal: v9c+v8+sym'
+        signals_used = '3 detectors active: Pattern, Outline Drawer, Asymmetry'
     elif andi_fires is not None:
-        # 3-signal fallback (ANDi without v9c) — substitute ANDi for v9c
-        # in the same logical position.
+        # 3-detector fallback (no Pattern Detector / v9c)
         if op['name'] == 'high_recall':
             verdict_fires = (andi_fires or v8_fires) and sym_fires
         elif op['name'] == 'balanced':
@@ -556,14 +581,14 @@ def compute_advisory(image_rgb_uint8: np.ndarray,
             verdict_fires = (andi_fires or sym_fires) and v8_fires
         else:
             verdict_fires = sym_fires or v8_fires or andi_fires
-        rule_used = f'{op["rule_with_v9c"]} (andi substituted for v9c)'
-        signals_used = '3-signal: andi+v8+sym'
+        rule_used = (f'{op["rule_with_v9c"]} (Reconstruction Detector '
+                     f'substituted for Pattern Detector)')
+        signals_used = '3 detectors active: Reconstruction, Outline Drawer, Asymmetry'
     else:
-        # 2-signal fallback (no neural anomaly signal): conservative
-        # AND on the two cheapest signals.
+        # 2-detector fallback (no neural anomaly signal): conservative AND
         verdict_fires = v8_fires and sym_fires
         rule_used = op['rule_without_v9c']
-        signals_used = '2-signal: v8+sym'
+        signals_used = '2 detectors active: Outline Drawer, Asymmetry'
 
     # Heavy mode (legacy v9b JEPA) is additive: if it fires we bump to
     # TUMOR even if the main rule didn't.
@@ -597,9 +622,20 @@ def compute_advisory(image_rgb_uint8: np.ndarray,
         'verdict': verdict,
         'confidence': confidence,
         'review_recommended': review_recommended,
+        # Internal name (used for env-var routing) + layperson display name.
+        # UI should prefer operating_point_display; operating_point is kept
+        # for backwards-compatible API consumers.
         'operating_point': op['name'],
+        'operating_point_display': op.get('display_name', op['name']),
+        'operating_point_description': op.get('display_description', ''),
+        # `rule` is the layperson-friendly description, `rule_technical`
+        # is the formal Boolean gate for tooltips/debugging.
         'rule': rule,
+        'rule_technical': op.get('rule_technical', rule),
         'signals_used': signals_used,
+        # Per-detector state. Layperson labels live alongside the technical
+        # keys so the UI can render either; the v9c_*/v8_*/symmetry_*/andi_*
+        # keys are preserved for backwards compatibility.
         'symmetry_p95': round(sym_p95, 3) if sym_p95 is not None else None,
         'symmetry_fired': sym_fires,
         'symmetry_threshold': op['symmetry_threshold'],
@@ -611,6 +647,22 @@ def compute_advisory(image_rgb_uint8: np.ndarray,
         'heavy_mode': _heavy_enabled(),
         'measured_performance': op['measured'],
         'inference_ms': int((time.perf_counter() - t0) * 1000),
+        # Display-friendly summary for the per-detector card row. Keep the
+        # order stable so the UI can render without sorting.
+        'detector_summary': [
+            {'name': 'Pattern Detector',
+              'description': 'Compares each region to what healthy brains look like',
+              'fired': v9c_fires is True, 'enabled': _v9c_enabled()},
+            {'name': 'Reconstruction Detector',
+              'description': 'Tries to redraw the scan and highlights where it struggles',
+              'fired': andi_fires is True, 'enabled': _andi_enabled()},
+            {'name': 'Tumor Outline Drawer',
+              'description': 'A medical segmentation model trained to outline tumor regions',
+              'fired': bool(v8_fires), 'enabled': True},
+            {'name': 'Asymmetry Detector',
+              'description': 'Compares the left and right sides of the brain',
+              'fired': bool(sym_fires), 'enabled': True},
+        ],
     }
     if v9c:
         payload.update(v9c)

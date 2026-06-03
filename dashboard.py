@@ -42,13 +42,18 @@ PROCESS_START_TS = time.time()
 ROOT_DIR = Path(__file__).resolve().parent
 WEB_DIR = ROOT_DIR / 'web_dashboard'
 # Classifiers (cnn / transfer / vit) were removed from the production
-# pipeline on 2026-06-01. Measured OOD recall topped out at 25-47% even
-# after retraining on multi-view multi-modal data; v8 segmentation has
-# 75-100% OOD recall on the same samples. Production verdict is now
-# derived from v8 segmentation alone via the view-aware cascade in
-# src/research/view_router. Keep MODEL_TYPES empty so every dashboard
-# loop that iterates classifiers becomes a no-op without further code
-# changes.
+# pipeline on 2026-06-01 (OOD recall capped at 25-47% even after
+# retraining). Replaced with a four-signal ensemble (final form shipped
+# 2026-06-03b, see src/research/v9b_advisory.py):
+#     verdict = (v9c AND symmetry) OR (v8 AND ANDi)
+# where v9c = frozen DINOv2 + JEPA predictor (the primary anomaly head)
+# and ANDi = unconditional pyramidal-noise DDPM. Measured on the
+# 246-sample expanded OOD bench:
+#     balanced        (default)   97% recall / 6%  FPR / 0.83 F1
+#     high_recall                100% recall / 14% FPR / 0.71 F1
+#     high_specificity            92% recall / 4%  FPR / 0.85 F1
+# Keep MODEL_TYPES empty so every dashboard loop that iterates the old
+# classifiers becomes a no-op without further code changes.
 MODEL_TYPES: list[str] = []
 MODEL_LABELS: dict[str, str] = {}
 ARTIFACTS_DIRS = [ROOT_DIR / 'real_eval_fixed', ROOT_DIR / 'real_eval_current', ROOT_DIR / 'artifacts']
@@ -63,9 +68,12 @@ ARTIFACTS_DIRS = [ROOT_DIR / 'real_eval_fixed', ROOT_DIR / 'real_eval_current', 
 #  - attention_unet_v2:  SMP UNet+ResNet34, LGG + Kaggle pseudo masks.
 #  - attention_unet_lgg: hand-rolled Attention U-Net, LGG only.
 #  - attention_unet:     pseudo-mask baseline (traces skull); historical reference.
-# v8 (ConvNeXt-Tiny + 384px + Tversky + Figshare-augmented dataset) is the
-# current production champion. micro_dice 0.80, AUROC 0.94 on dataset_v8/test.
-# At threshold 0.20 + TTA: FN rate drops 31% -> 23% with FP staying under 0.3%.
+# v8 (ConvNeXt-Tiny + 384px + Tversky + Figshare-augmented dataset) is one
+# of the four ensemble signals. micro_dice 0.80, AUROC 0.94 on
+# dataset_v8/test. At threshold 0.20 + TTA the v8 mask is fed into the
+# 4-signal advisory rule `(v9c AND sym) OR (v8 AND andi)` — v8's role is
+# the area-based branch of the OR; the v9c+symmetry branch catches
+# tumors where v8 missed.
 SEGMENTATION_DIRS = [
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v8',
     ROOT_DIR / 'segmentation_artifacts' / 'attention_unet_v5',
@@ -913,20 +921,23 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
 
     # --- 2) Classifier ensemble REMOVED -----------------------------------
     # 2026-06-01: the 3-classifier ensemble (cnn / transfer / vit) was
-    # deprecated. Measured OOD recall topped out at 25-47% after
-    # extensive retraining (incl. multi-view multi-modal BraTS), while
-    # v8 segmentation hit 75-100% OOD recall on the same samples. The
-    # production verdict now comes from v8 segmentation alone via the
-    # view-aware cascade in src/research/view_router. Grad-CAM is also
-    # gone since it depended on the classifier backbones.
+    # deprecated (OOD recall capped at 25-47% even after retraining).
+    # Replaced as of 2026-06-03b by a four-signal anomaly-detection
+    # ensemble combining v9c (frozen DINOv2 + JEPA predictor) with ANDi
+    # (pyramidal-noise DDPM), the v8 mask, and a deterministic symmetry
+    # score. See src/research/v9b_advisory.py for the rule and operating
+    # points. Grad-CAM is also gone since it depended on the classifier
+    # backbones; the advisory's signal-level firing breakdown serves the
+    # same diagnostic role at the ensemble layer.
     classifier_results: dict = {}    # always empty; downstream stays compatible
     gradcam_for_features = None       # no classifier -> no Grad-CAM
 
-    # --- 2b) View-aware verdict from segmentation alone --------------------
+    # --- 2b) View-aware threshold for v8 mask -----------------------------
     # Detects axial / sagittal / coronal from brain geometry and applies
-    # a per-view threshold. The mask_suppression logic from the previous
-    # classifier-driven cascade is gone — there is no consensus to honour
-    # any more, so we simply present whatever v8 (+ MedSAM refiner) saw.
+    # a per-view threshold to the v8 segmentation. v8 is no longer the
+    # sole verdict source — it's one of the four signals consumed by the
+    # advisory below — but the view-aware threshold still produces the
+    # cleanest per-view mask area we feed into the ensemble.
     view_aware_disabled = os.environ.get(
         'VIEW_AWARE_CASCADE_DISABLE', '0').strip().lower() in ('1', 'true', 'yes')
     view_info = None
@@ -965,6 +976,7 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
     # When only ANDi is on: substitutes ANDi for v9c in the same logical
     # position. When neither is on: 2-signal (v8 AND symmetry) fallback.
     # Legacy v9b JEPA+DDPM stays behind V9B_HEAVY=1 for research only.
+    v9b = None
     if image_rgb is not None:
         try:
             from src.research.v9b_advisory import compute_advisory
@@ -972,21 +984,20 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
             v9b = compute_advisory(image_rgb, v8_area_px=v8_area_px)
             if v9b is not None:
                 seg['v9b_advisory'] = v9b
-                # Safety-first escalation: if the v9c+symmetry advisory
-                # caught a TUMOR that v8 alone (the top-level verdict)
-                # missed, OR if the advisory's positive is low-confidence
-                # at high_recall, raise the review flag so the radiologist
-                # examines this case even when v8 stays clean. We never
-                # silently overturn v8 — both verdicts are returned — but
-                # we make sure the human sees a flag.
-                v8_says_tumor = v8_area_px >= 50
-                adv_says_tumor = v9b.get('verdict') == 'TUMOR'
-                if adv_says_tumor and (not v8_says_tumor or v9b.get('review_recommended')):
+                # The advisory IS the verdict now. We still surface v8
+                # alongside (clinicians read the mask directly) but the
+                # ensemble decides TUMOR vs no_tumor — that's what gives
+                # us 97% recall / 6% FPR instead of v8-alone's ~47%/10%
+                # at the same operating point. If the advisory's positive
+                # is low-confidence (only one branch of the OR fired),
+                # raise the review flag so the radiologist examines it.
+                if v9b.get('review_recommended'):
                     seg['requires_human_review'] = True
                     seg.setdefault('requires_human_review_reason',
-                        f'v9b advisory ({v9b.get("rule", "ensemble")}) flagged TUMOR '
-                        f'with {v9b.get("confidence", "low")} confidence — radiologist review '
-                        f'recommended to rule out FP at high_recall operating point.')
+                        f'Ensemble rule "{v9b.get("rule", "ensemble")}" flagged TUMOR '
+                        f'with low confidence (one signal branch). Radiologist review '
+                        f'recommended to rule out a possible false positive at the '
+                        f'{v9b.get("operating_point", "balanced")} operating point.')
         except Exception as exc:
             seg['v9b_advisory'] = {'enabled': False, 'reason': f'wire-up failed: {exc}'}
 
@@ -1065,6 +1076,7 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
             features=features,
             modality_channels=modality_channels,
             backend=backend,
+            advisory=v9b,
         )
     except Exception as exc:
         explanation = {
@@ -1076,8 +1088,34 @@ def build_explanation(image_bytes, *, threshold=0.5, modality=None, backend=None
             'raw_features': features,
         }
 
+    # Top-level verdict block. Source of truth = the 4-signal advisory
+    # when available; fall back to the v8-area gate when it isn't.
+    # Keeping seg['v9b_advisory'] intact for callers that want every
+    # signal-level field, but the simplified verdict/confidence/rule
+    # surface up front so the UI doesn't need to drill in.
+    if v9b is not None:
+        verdict_top = v9b.get('verdict', 'no_tumor')
+        confidence_top = v9b.get('confidence', 'low')
+        rule_top = v9b.get('rule', 'ensemble')
+        signals_used_top = v9b.get('signals_used', 'unknown')
+        operating_point_top = v9b.get('operating_point', 'balanced')
+        review_recommended_top = bool(v9b.get('review_recommended', False))
+    else:
+        verdict_top = 'TUMOR' if int(seg.get('tumor_area_px', 0) or 0) >= 50 else 'no_tumor'
+        confidence_top = 'high'
+        rule_top = 'v8 area >= 50 px (advisory unavailable)'
+        signals_used_top = '1-signal: v8'
+        operating_point_top = 'fallback'
+        review_recommended_top = False
+
     return {
         'success': True,
+        'verdict': verdict_top,
+        'confidence': confidence_top,
+        'rule': rule_top,
+        'signals_used': signals_used_top,
+        'operating_point': operating_point_top,
+        'review_recommended': review_recommended_top,
         'segmentation': seg,
         'classifiers': classifier_results,
         'features': features,
@@ -1225,16 +1263,17 @@ def load_model_metrics():
 
 def predict_image(model_name, image_bytes):
     """REMOVED. Classifier ensemble (cnn/transfer/vit) was deprecated on
-    2026-06-01 — measured OOD recall capped at 25-47% even after extensive
-    retraining, vs v8 segmentation at 75-100%. The production verdict now
-    comes from v8 segmentation alone via the view-aware cascade.
+    2026-06-01 (OOD recall capped at 25-47% even after retraining). The
+    production verdict now comes from the four-signal advisory ensemble
+    (v9c + ANDi + v8 + symmetry) — measured 97% recall / 6% FPR / 0.83
+    F1 at the balanced operating point on the 246-sample bench.
 
     Kept as a stub so any external caller gets a clean 'removed' response
     instead of a 500. The /predict HTTP endpoint also returns 410 Gone.
     """
     return {'removed': True, 'reason': (
-        'classifier ensemble removed 2026-06-01; verdict from v8 '
-        'segmentation only. See proposals/v9b_normative_jepa_conformal_anomaly.md '
+        'classifier ensemble removed 2026-06-01; verdict now from the '
+        '4-signal advisory (v9c+ANDi+v8+symmetry). See proposals/v9b_normative_jepa_conformal_anomaly.md '
         'for the replacement path under development.'
     )}
 
@@ -1331,6 +1370,38 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         try:
             result = segment_image(file_item['content'], threshold=threshold,
                                     modality=modality, enable_v3_fallback=enable_v3)
+            # Augment with the 4-signal advisory verdict so /segment
+            # callers see the ensemble decision directly (the main
+            # analyze flow in app.js hits /segment, not /explain). The
+            # advisory needs the raw RGB which segment_image already
+            # decoded; we re-decode here to keep segment_image pure.
+            try:
+                from PIL import Image as _PIL
+                import io as _io
+                from src.research.v9b_advisory import compute_advisory
+                _img = _PIL.open(_io.BytesIO(file_item['content'])).convert('RGB')
+                _img_rgb = np.asarray(_img, dtype=np.uint8)
+                v8_area_px = int(result.get('tumor_area_px', 0) or 0)
+                v9b = compute_advisory(_img_rgb, v8_area_px=v8_area_px)
+                if v9b is not None:
+                    result['v9b_advisory'] = v9b
+                    result['verdict'] = v9b.get('verdict', 'no_tumor')
+                    result['confidence'] = v9b.get('confidence', 'low')
+                    result['rule'] = v9b.get('rule', 'ensemble')
+                    result['signals_used'] = v9b.get('signals_used', 'unknown')
+                    result['operating_point'] = v9b.get('operating_point', 'balanced')
+                    result['review_recommended'] = bool(v9b.get('review_recommended', False))
+            except Exception as exc:
+                result.setdefault('v9b_advisory', {'enabled': False,
+                                                    'reason': f'advisory wire-up failed: {exc}'})
+                # Fall back to v8-area gate for the top-level verdict
+                result.setdefault('verdict',
+                    'TUMOR' if int(result.get('tumor_area_px', 0) or 0) >= 50 else 'no_tumor')
+                result.setdefault('confidence', 'high')
+                result.setdefault('rule', 'v8 area >= 50 px (advisory unavailable)')
+                result.setdefault('signals_used', '1-signal: v8')
+                result.setdefault('operating_point', 'fallback')
+                result.setdefault('review_recommended', False)
             self.respond_json(result)
         except Exception as exc:
             self.respond_json({'success': False, 'error': str(exc)}, status=500)
@@ -1344,10 +1415,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             'removed': True,
             'message': (
                 '/predict has been removed. Classifier ensemble was '
-                'deprecated 2026-06-01 (OOD recall capped at 25-47% vs '
-                'v8 segmentation at 75-100%). Use /explain or /segment '
-                'instead — both derive the tumor verdict from v8 + '
-                'view-aware cascade.'
+                'deprecated 2026-06-01 (OOD recall capped at 25-47%). '
+                'Use /explain or /segment instead — both return the '
+                '4-signal advisory verdict (v9c+ANDi+v8+symmetry, '
+                'measured 97% recall / 6% FPR at the balanced operating '
+                'point).'
             ),
         }, status=410)
 
@@ -1523,10 +1595,17 @@ def _get_status_snapshot() -> dict:
     # /status JSON schema stays stable for any external consumer.
     snap['classifiers_removed'] = True
     snap['classifiers_removed_reason'] = (
-        'Deprecated 2026-06-01: ensemble OOD recall capped at 25-47% vs '
-        'v8 segmentation 75-100%. Verdict now derived from v8 + view-aware '
-        'cascade only.'
+        'Deprecated 2026-06-01: ensemble OOD recall capped at 25-47%. '
+        'Verdict now from the 4-signal advisory (v9c + ANDi + v8 + '
+        'symmetry) — 97% recall / 6% FPR at the balanced operating point.'
     )
+    snap['verdict_source'] = 'advisory_4signal'
+    snap['advisory_signals'] = ['v9c (DINOv2+JEPA)', 'ANDi DDPM', 'v8 segmentation', 'symmetry geometry']
+    snap['advisory_operating_points'] = {
+        'balanced (default)': '97% recall / 6% FPR / 0.83 F1',
+        'high_recall': '100% recall / 14% FPR / 0.71 F1',
+        'high_specificity': '92% recall / 4% FPR / 0.85 F1',
+    }
     # Segmentation model directories. A model counts as 'present' if EITHER
     # the .pt or .onnx file exists - both are valid inference paths and the
     # Spaces container only has .onnx (downloaded from HF Hub at boot).

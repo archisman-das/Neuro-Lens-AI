@@ -41,14 +41,19 @@ REPO_ID = 'Tubai01/neurolens-ai'
 REPO_TYPE = 'space'
 
 # Order matters: dependencies first so importers don't crash at startup.
-# As of 2026-06-03b the advisory imports ANDi modules, so those go up too.
+# As of 2026-06-03c the dashboard refactor also ships llm_explain + frontend
+# changes that surface the 4-signal verdict as the primary UI element.
 UPLOAD_ORDER = [
     ('src/research/v9c_dinov2_jepa.py',          'src/research/v9c_dinov2_jepa.py'),
     ('src/research/latent_diffusion_decoder.py', 'src/research/latent_diffusion_decoder.py'),
     ('src/research/andi_inference.py',           'src/research/andi_inference.py'),
     ('src/research/pyramidal_noise.py',          'src/research/pyramidal_noise.py'),
     ('src/research/v9b_advisory.py',             'src/research/v9b_advisory.py'),
+    ('src/llm_explain.py',                        'src/llm_explain.py'),
     ('dashboard.py',                              'dashboard.py'),
+    ('web_dashboard/index.html',                  'web_dashboard/index.html'),
+    ('web_dashboard/app.js',                      'web_dashboard/app.js'),
+    ('web_dashboard/openapi.yml',                 'web_dashboard/openapi.yml'),
 ]
 
 

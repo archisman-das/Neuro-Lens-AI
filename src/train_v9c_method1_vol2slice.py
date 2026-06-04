@@ -32,8 +32,10 @@ sys.path.insert(0, str(ROOT))
 
 from src.checkpoint_utils import atomic_save
 from src.research.v9c_crossjepa.dataset_3d import Vol2SliceDataset
-from src.research.v9c_crossjepa.v8_teacher import V8FrozenTeacher
-from src.research.v9c_crossjepa.volume_to_slice import Vol2SliceModel
+from src.research.v9c_crossjepa.teachers import build_teacher
+from src.research.v9c_crossjepa.volume_to_slice import (
+    Vol2SliceModel, Vol2SliceModelMulti,
+)
 
 
 def _collate(batch):
@@ -85,6 +87,26 @@ def main():
     ap.add_argument('--aug_bias_field_strength', type=float, default=0.15)
     ap.add_argument('--aug_noise_std', type=float, default=0.02)
     ap.add_argument('--aug_renormalize_pct', type=float, default=0.5)
+    # --- Multi-teacher mode (Option A / Option C from the analysis doc) ---
+    # `single`     : original Method 1 (one teacher). Default for backwards compat.
+    # `dual_heads` : Option A. Predictor has K parallel output heads, one
+    #                per teacher; loss is the (weighted) sum across teachers.
+    # `teacher_id` : Option C. Single output head, teacher_id fed into the
+    #                conditioning (gradient sink); one teacher sampled per
+    #                training step.
+    ap.add_argument('--mode', default='single',
+                     choices=('single', 'dual_heads', 'teacher_id'),
+                     help='Single-teacher (default), or multi-teacher mode A or C.')
+    # `--teachers` is a comma-sep list of short names. Examples:
+    #   --teachers v8
+    #   --teachers dinov2
+    #   --teachers v8,dinov2
+    #   --teachers dinov2,dinov2-large    (heterogeneous embed_dims OK)
+    ap.add_argument('--teachers', default='v8',
+                     help='Comma-separated teacher names. Known: v8, dinov2, dinov2-large')
+    ap.add_argument('--teacher_weights', default='',
+                     help='Comma-separated per-teacher loss weights for --mode dual_heads. '
+                          'Default = 1.0 each.')
     args = ap.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -99,11 +121,20 @@ def main():
         with log_path.open('a', encoding='utf-8') as f:
             f.write(msg + '\n')
 
-    # 1. Frozen v8 teacher (encoder side only)
-    log(f'[init] loading frozen v8 teacher from {args.v8_ckpt}')
-    teacher = V8FrozenTeacher.from_unet_checkpoint(
-        args.v8_ckpt, in_channels=3, image_size=384, device=device)
-    log(f'  v8 teacher embed dim = {teacher.embed_dim}')
+    # 1. Frozen teachers (from --teachers list).
+    teacher_names = [t.strip() for t in args.teachers.split(',') if t.strip()]
+    if not teacher_names:
+        sys.exit('ERROR: --teachers cannot be empty')
+    teachers = []
+    for tn in teacher_names:
+        log(f'[init] loading frozen teacher: {tn}')
+        teachers.append(build_teacher(tn, v8_ckpt=args.v8_ckpt, device=device))
+        log(f'  {tn} teacher embed dim = {teachers[-1].embed_dim}')
+    # Back-compat: when --mode single (default) the trainer keeps using the
+    # legacy single-teacher Vol2SliceModel.
+    if args.mode == 'single' and len(teachers) != 1:
+        sys.exit(f'ERROR: --mode single requires exactly 1 teacher, got {len(teachers)}')
+    teacher = teachers[0]   # legacy alias used below in the model build
 
     # 2. Dataset
     # IMPORTANT: pass recursive=True so '**' in the glob actually expands
@@ -142,21 +173,46 @@ def main():
                          collate_fn=_collate)
 
     # 3. Model + optimizer
-    model = Vol2SliceModel(
-        v8_teacher=teacher,
-        volume_size=tuple(args.volume_size),
-        in_chans=args.in_channels,
-        patch_size=args.patch_size,
-        encoder_dim=args.encoder_dim,
-        encoder_depth=args.encoder_depth,
-        encoder_heads=args.encoder_heads,
-        predictor_dim=args.predictor_dim,
-        predictor_depth=args.predictor_depth,
-    ).to(device)
+    if args.mode == 'single':
+        model = Vol2SliceModel(
+            v8_teacher=teacher,
+            volume_size=tuple(args.volume_size),
+            in_chans=args.in_channels,
+            patch_size=args.patch_size,
+            encoder_dim=args.encoder_dim,
+            encoder_depth=args.encoder_depth,
+            encoder_heads=args.encoder_heads,
+            predictor_dim=args.predictor_dim,
+            predictor_depth=args.predictor_depth,
+        ).to(device)
+    else:
+        # Option A (dual_heads) or Option C (teacher_id)
+        if args.teacher_weights:
+            tw = [float(w) for w in args.teacher_weights.split(',') if w.strip()]
+            assert len(tw) == len(teachers), \
+                f'len(teacher_weights)={len(tw)} != len(teachers)={len(teachers)}'
+        else:
+            tw = [1.0] * len(teachers)
+        model = Vol2SliceModelMulti(
+            teachers=teachers, mode=args.mode,
+            volume_size=tuple(args.volume_size),
+            in_chans=args.in_channels,
+            patch_size=args.patch_size,
+            encoder_dim=args.encoder_dim,
+            encoder_depth=args.encoder_depth,
+            encoder_heads=args.encoder_heads,
+            predictor_dim=args.predictor_dim,
+            predictor_depth=args.predictor_depth,
+            teacher_weights=tw,
+        ).to(device)
+        log(f'[init] mode={args.mode}  teachers={teacher_names}  weights={tw}')
     n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    n_frozen = sum(p.numel() for p in model.teacher.parameters())
+    if args.mode == 'single':
+        n_frozen = sum(p.numel() for p in model.teacher.parameters())
+    else:
+        n_frozen = sum(sum(p.numel() for p in t.parameters()) for t in model.teachers)
     log(f'[init] trainable params = {n_train/1e6:.1f}M  '
-        f'frozen teacher = {n_frozen/1e6:.1f}M')
+        f'frozen teacher(s) = {n_frozen/1e6:.1f}M')
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=args.lr, weight_decay=0.05)
@@ -180,11 +236,27 @@ def main():
             log(f'[resume] failed ({exc}); starting fresh')
 
     # 5. Train
+    def _keep_teachers_eval():
+        if args.mode == 'single':
+            model.teacher.encoder.eval()
+        else:
+            for t in model.teachers:
+                t.eval()
+
+    def _cos_sim_for_log(out_dict: dict) -> float:
+        """Single-teacher reports 'cos_sim'; multi-teacher reports
+        'cos_t0', 'cos_t1', etc. We average for the log line."""
+        if 'cos_sim' in out_dict:
+            return float(out_dict['cos_sim'])
+        ks = [k for k in out_dict if k.startswith('cos_t')]
+        if not ks:
+            return float('nan')
+        return float(sum(float(out_dict[k]) for k in ks) / len(ks))
+
     t_total = time.perf_counter()
     for epoch in range(start_epoch, args.epochs):
         model.train()
-        # Keep teacher in eval no matter what
-        model.teacher.encoder.eval()
+        _keep_teachers_eval()   # belt-and-suspenders on the frozen invariant
         loss_sum = 0.0
         cos_sum = 0.0
         n_steps = 0
@@ -205,7 +277,7 @@ def main():
                 scaler.step(optimizer); scaler.update()
             else:
                 loss.backward(); optimizer.step()
-            loss_sum += float(loss); cos_sum += float(out_dict['cos_sim'])
+            loss_sum += float(loss); cos_sum += _cos_sim_for_log(out_dict)
             n_steps += 1; global_step += 1
             if global_step % args.checkpoint_every_steps == 0:
                 atomic_save({

@@ -31,6 +31,8 @@ from src.research.v9c_crossjepa.vit_3d import (
 )
 from src.research.v9c_crossjepa.volume_to_slice import (
     SliceEmbeddingPredictor, Vol2SliceModel,
+    MultiHeadSliceEmbeddingPredictor, TeacherIdConditionedPredictor,
+    Vol2SliceModelMulti,
 )
 
 
@@ -295,6 +297,179 @@ def test_mod2mod_teachers_dont_get_gradient():
             assert torch.equal(s, p), (
                 f'Teacher {m!r} weights changed after one training step — '
                 'frozen teacher invariant violated.')
+
+
+# ---------------------------------------------------------------------------
+# Multi-teacher (Option A = dual_heads, Option C = teacher_id) tests
+# ---------------------------------------------------------------------------
+
+def _two_tiny_teachers(embed_dims=(768, 512)):
+    """Build two distinct tiny frozen teachers with different embed dims
+    so we can also exercise the heterogeneous-dim path (Option C uses
+    max(dim) as the output head and slices per-teacher)."""
+    return [_TinyFrozenTeacher(embed_dim=d, image_size=64) for d in embed_dims]
+
+
+def test_multi_head_predictor_shape():
+    pred = MultiHeadSliceEmbeddingPredictor(
+        encoder_dim=384, predictor_dim=192, depth=2, heads=6,
+        conditioning_dim=192, teacher_embed_dims=[768, 512])
+    B, N = 3, 16
+    vol_tokens = torch.randn(B, N, 384)
+    cond = torch.randn(B, 192)
+    outs = pred(vol_tokens, cond)
+    assert isinstance(outs, list) and len(outs) == 2
+    assert outs[0].shape == (B, 768)
+    assert outs[1].shape == (B, 512)
+
+
+def test_teacher_id_predictor_shape():
+    pred = TeacherIdConditionedPredictor(
+        encoder_dim=384, predictor_dim=192, depth=2, heads=6,
+        conditioning_dim=192, out_dim=768, n_teachers=2)
+    B, N = 3, 16
+    out = pred(torch.randn(B, N, 384),
+                torch.randn(B, 192),
+                torch.tensor([0, 1, 0], dtype=torch.long))
+    assert out.shape == (B, 768)
+
+
+def _make_multi_batch(B=2, vol_dim=(32, 64, 64), in_chans=1):
+    return {
+        'volume': torch.randn(B, in_chans, *vol_dim),
+        'target_slice_rgb': torch.rand(B, 3, 64, 64),
+        'plane_idx': torch.zeros(B, dtype=torch.long),
+        'slice_idx_norm': torch.rand(B),
+        'voxel_spacing': torch.ones(B, 3),
+        'intensity_hist': torch.rand(B, 48),
+    }
+
+
+def test_vol2slice_multi_dual_heads_runs():
+    """Option A: dual_heads should produce per-teacher losses + a summed
+    total. Gradient flow into the encoder must work."""
+    teachers = _two_tiny_teachers((768, 512))
+    model = Vol2SliceModelMulti(
+        teachers=teachers, mode='dual_heads',
+        volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+        encoder_dim=384, encoder_depth=2, encoder_heads=6,
+        predictor_dim=192, predictor_depth=2,
+    )
+    batch = _make_multi_batch()
+    out = model.training_step(batch)
+    # Per-teacher diagnostics present + summed loss requires grad
+    assert 'loss_t0' in out and 'loss_t1' in out
+    assert 'cos_t0' in out and 'cos_t1' in out
+    assert out['loss'].requires_grad
+    out['loss'].backward()
+    grads = [p.grad for p in model.encoder.parameters() if p.grad is not None]
+    assert any(g.abs().sum() > 0 for g in grads), 'no grad into 3D encoder'
+
+
+def test_vol2slice_multi_teacher_id_runs():
+    """Option C: teacher_id sampled randomly per step. Single output
+    head sliced to each teacher's dim. Gradient must reach encoder."""
+    teachers = _two_tiny_teachers((768, 512))
+    model = Vol2SliceModelMulti(
+        teachers=teachers, mode='teacher_id',
+        volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+        encoder_dim=384, encoder_depth=2, encoder_heads=6,
+        predictor_dim=192, predictor_depth=2,
+    )
+    # Use B=4 so both teachers are likely sampled at least once
+    batch = _make_multi_batch(B=4)
+    torch.manual_seed(0)
+    out = model.training_step(batch)
+    assert out['loss'].requires_grad
+    out['loss'].backward()
+    grads = [p.grad for p in model.encoder.parameters() if p.grad is not None]
+    assert any(g.abs().sum() > 0 for g in grads), 'no grad into 3D encoder'
+
+
+def test_vol2slice_multi_all_teachers_frozen():
+    """The CrossJEPA frozen-teacher invariant must hold for BOTH modes."""
+    for mode in ('dual_heads', 'teacher_id'):
+        teachers = _two_tiny_teachers((768, 512))
+        before = [
+            [p.clone() for p in t.parameters()] for t in teachers
+        ]
+        model = Vol2SliceModelMulti(
+            teachers=teachers, mode=mode,
+            volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+            encoder_dim=384, encoder_depth=2, encoder_heads=6,
+            predictor_dim=192, predictor_depth=2,
+        )
+        opt = torch.optim.SGD(
+            [p for p in model.parameters() if p.requires_grad], lr=0.1)
+        batch = _make_multi_batch(B=4)
+        torch.manual_seed(0)
+        out = model.training_step(batch)
+        opt.zero_grad(); out['loss'].backward(); opt.step()
+        for ti, snapshots in enumerate(before):
+            for s, p in zip(snapshots, teachers[ti].parameters()):
+                assert torch.equal(s, p), (
+                    f'mode={mode}: teacher {ti} param changed after backward — '
+                    'frozen-teacher invariant violated')
+
+
+def test_vol2slice_multi_teachers_not_in_parameters():
+    """Teachers must not be in model.parameters() (so the optimizer
+    can't update them even with a global step)."""
+    for mode in ('dual_heads', 'teacher_id'):
+        teachers = _two_tiny_teachers((768, 512))
+        model = Vol2SliceModelMulti(
+            teachers=teachers, mode=mode,
+            volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+            encoder_dim=384, encoder_depth=2, encoder_heads=6,
+            predictor_dim=192, predictor_depth=2,
+        )
+        train_ids = {id(p) for p in model.parameters()}
+        for ti, t in enumerate(teachers):
+            for p in t.parameters():
+                assert id(p) not in train_ids, (
+                    f'mode={mode}: teacher {ti} param leaked into model.parameters()')
+
+
+def test_vol2slice_multi_dual_heads_weighted_loss():
+    """Per-teacher weights must shift the loss balance. Set weights
+    [1, 0] -> total loss should equal loss_t0 only."""
+    teachers = _two_tiny_teachers((768, 512))
+    model = Vol2SliceModelMulti(
+        teachers=teachers, mode='dual_heads',
+        volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+        encoder_dim=384, encoder_depth=2, encoder_heads=6,
+        predictor_dim=192, predictor_depth=2,
+        teacher_weights=[1.0, 0.0],
+    )
+    batch = _make_multi_batch(B=2)
+    torch.manual_seed(42)
+    out = model.training_step(batch)
+    # weight on teacher 1 is zero, so total == loss_t0
+    assert torch.allclose(out['loss'].detach(), out['loss_t0'].detach())
+
+
+def test_vol2slice_multi_anomaly_score_modes():
+    """anomaly_score returns the right shape in both modes (B,)."""
+    teachers = _two_tiny_teachers((768, 512))
+    for mode in ('dual_heads', 'teacher_id'):
+        model = Vol2SliceModelMulti(
+            teachers=teachers, mode=mode,
+            volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+            encoder_dim=384, encoder_depth=2, encoder_heads=6,
+            predictor_dim=192, predictor_depth=2,
+        )
+        b = _make_multi_batch(B=3)
+        s = model.anomaly_score(
+            b['volume'], b['target_slice_rgb'], b['plane_idx'],
+            b['slice_idx_norm'], b['voxel_spacing'], b['intensity_hist'])
+        assert s.shape == (3,), f'mode={mode}: expected (3,), got {s.shape}'
+        # teacher_id mode also supports a specific teacher_id arg
+        if mode == 'teacher_id':
+            s0 = model.anomaly_score(
+                b['volume'], b['target_slice_rgb'], b['plane_idx'],
+                b['slice_idx_norm'], b['voxel_spacing'], b['intensity_hist'],
+                teacher_id=0)
+            assert s0.shape == (3,)
 
 
 if __name__ == '__main__':

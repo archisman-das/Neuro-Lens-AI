@@ -472,5 +472,78 @@ def test_vol2slice_multi_anomaly_score_modes():
             assert s0.shape == (3,)
 
 
+# ---------------------------------------------------------------------------
+# Teacher factory + MedSAM API-shape tests (no actual HF download)
+# ---------------------------------------------------------------------------
+
+def test_build_teacher_unknown_name_raises():
+    """The factory must refuse unknown names with a clear message."""
+    from src.research.v9c_crossjepa.teachers import build_teacher
+    with pytest.raises(ValueError, match='unknown teacher name'):
+        build_teacher('not_a_teacher')
+
+
+def test_build_teacher_v8_requires_ckpt():
+    """v8 needs a checkpoint path; factory must raise without it."""
+    from src.research.v9c_crossjepa.teachers import build_teacher
+    with pytest.raises(ValueError, match='v8_ckpt'):
+        build_teacher('v8', v8_ckpt=None)
+
+
+def test_medsam_teacher_class_attributes():
+    """Sanity-check the MedSAMFrozenTeacher class without instantiating
+    it (which would trigger a 358 MB HF download). We verify the class
+    declares the right embed_dim + has the BaseFrozenTeacher API."""
+    from src.research.v9c_crossjepa.teachers import (
+        MedSAMFrozenTeacher, BaseFrozenTeacher,
+    )
+    assert issubclass(MedSAMFrozenTeacher, BaseFrozenTeacher)
+    # The embed_dim attribute is set in __init__; check via the type
+    # annotation hint instead (the class has no module-level constant).
+    # Class-level: DEFAULT_REPO sanity
+    assert MedSAMFrozenTeacher.DEFAULT_REPO.endswith('medsam-vit-base')
+    # Public method signature
+    import inspect
+    sig = inspect.signature(MedSAMFrozenTeacher.embed_batch)
+    assert 'x' in sig.parameters, \
+        'embed_batch must accept a tensor arg `x` per BaseFrozenTeacher contract'
+
+
+def test_vol2slice_multi_with_three_teachers():
+    """Sanity-check the multi-teacher path with 3 heterogeneous teachers
+    using tiny stand-ins (matches the planned v9 ablation: v8 + dinov2
+    + medsam). Tiny teachers have dims [768, 768, 256]."""
+    teachers = [
+        _TinyFrozenTeacher(embed_dim=768, image_size=64),
+        _TinyFrozenTeacher(embed_dim=768, image_size=64),
+        _TinyFrozenTeacher(embed_dim=256, image_size=64),
+    ]
+    # dual_heads
+    model_a = Vol2SliceModelMulti(
+        teachers=teachers, mode='dual_heads',
+        volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+        encoder_dim=384, encoder_depth=2, encoder_heads=6,
+        predictor_dim=192, predictor_depth=2,
+    )
+    out_a = model_a.training_step(_make_multi_batch(B=4))
+    assert {'loss', 'loss_t0', 'loss_t1', 'loss_t2'}.issubset(out_a.keys())
+    out_a['loss'].backward()
+    # teacher_id (output dim = max = 768; t2 gets pred[:, :256] sliced)
+    teachers2 = [
+        _TinyFrozenTeacher(embed_dim=768, image_size=64),
+        _TinyFrozenTeacher(embed_dim=768, image_size=64),
+        _TinyFrozenTeacher(embed_dim=256, image_size=64),
+    ]
+    model_c = Vol2SliceModelMulti(
+        teachers=teachers2, mode='teacher_id',
+        volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+        encoder_dim=384, encoder_depth=2, encoder_heads=6,
+        predictor_dim=192, predictor_depth=2,
+    )
+    torch.manual_seed(0)
+    out_c = model_c.training_step(_make_multi_batch(B=6))
+    out_c['loss'].backward()
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-xvs'])

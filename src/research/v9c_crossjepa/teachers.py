@@ -185,10 +185,93 @@ class DINOv2FrozenTeacher(BaseFrozenTeacher):
         return pooled
 
 
+class MedSAMFrozenTeacher(BaseFrozenTeacher):
+    """Frozen MedSAM image encoder via HuggingFace transformers.
+
+    MedSAM (Ma et al., Nat Commun 2024) is a SAM ViT-B image encoder +
+    prompt encoder + mask decoder, finetuned on 1.5M medical image-mask
+    pairs across many modalities. We use ONLY its vision encoder for
+    embedding extraction — same trick as the v8 wrapper (peel off the
+    encoder, ignore the prompt/decoder side).
+
+    Embedding dim = 256 (the dim AFTER SAM's neck convolution; this is
+    the feature representation MedSAM's prompt encoder consumes).
+    Pre-neck ViT features are 768-d but they're not the "what MedSAM
+    thinks this image is" representation — the neck output is.
+
+    Why this teacher (vs v8):
+      - Trained on 1.5M medical image-mask pairs (vs v8's ~6k BraTS volumes)
+        → much broader preprocessing distribution seen during training
+      - 89M params (vs v8's 27M)
+      - Inherits SAM's natural-image pretraining (11M images) under the
+        medical finetune → some intensity-robustness baked in
+
+    Honest caveats (compared to DINOv2):
+      - MedSAM's image encoder is OPTIMIZED for "given a bbox, produce a
+        mask" — task-collapse risk. Features may not be ideal as
+        standalone embeddings the way DINOv2's self-supervised features
+        are. Empirical question we resolve via held-out IXI AUC.
+      - Untested in our prior LOSO bake-off (only DINOv2 was tested
+        there at AUC=0.842 vs medical-foundations at 0.27-0.54).
+
+    HF repo: 'flaviagiammarino/medsam-vit-base' (~358 MB).
+    """
+
+    DEFAULT_REPO = 'flaviagiammarino/medsam-vit-base'
+
+    def __init__(self, repo_id: str = DEFAULT_REPO, device: str = 'cuda'):
+        super().__init__()
+        try:
+            from transformers import SamModel, SamProcessor   # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                'transformers required for MedSAM teacher. '
+                'pip install transformers') from exc
+        self.repo_id = repo_id
+        self.processor = SamProcessor.from_pretrained(repo_id)
+        full = SamModel.from_pretrained(repo_id).to(device).eval()
+        # We only need the vision encoder. Drop the prompt encoder + mask
+        # decoder to save GPU memory. (Both are still in `full`'s state
+        # dict but unreferenced, so they get GC'd after we extract.)
+        self.vision_encoder = full.vision_encoder
+        # SAM's vision encoder output is (B, 256, 64, 64) after the neck
+        self.embed_dim = 256
+        self.image_size = 1024
+        # SAM uses ImageNet-style normalization (mean/std from the
+        # SamProcessor's image_processor)
+        self._mean = list(self.processor.image_processor.image_mean)
+        self._std = list(self.processor.image_processor.image_std)
+        self._freeze()
+
+    @torch.no_grad()
+    def embed_batch(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, C, H, W) float in [0, 1]. SAM expects 1024x1024 inputs
+        with ImageNet normalization; we apply both inline (no PIL
+        roundtrip via SamProcessor — that path is for prompted inference
+        and is much slower)."""
+        if x.shape[-1] != self.image_size or x.shape[-2] != self.image_size:
+            x = F.interpolate(x, size=(self.image_size, self.image_size),
+                               mode='bilinear', align_corners=False)
+        mean = torch.tensor(self._mean, dtype=x.dtype, device=x.device).view(1, -1, 1, 1)
+        std = torch.tensor(self._std, dtype=x.dtype, device=x.device).view(1, -1, 1, 1)
+        x = (x - mean) / std
+        # SamModel.vision_encoder returns a SamVisionEncoderOutput with
+        # last_hidden_state of shape (B, 256, 64, 64) post-neck.
+        out = self.vision_encoder(pixel_values=x)
+        feat = out.last_hidden_state                    # (B, 256, 64, 64)
+        # Global average pool to a fixed-length vector
+        pooled = feat.mean(dim=(2, 3))                  # (B, 256)
+        assert pooled.shape[-1] == self.embed_dim, (
+            f'MedSAMFrozenTeacher: expected {self.embed_dim}-d embedding, '
+            f'got {pooled.shape[-1]}.')
+        return pooled
+
+
 def build_teacher(name: str, v8_ckpt: Optional[str] = None,
                     device: str = 'cuda') -> BaseFrozenTeacher:
     """Factory that builds a teacher by short name. Used by the trainer
-    so the `--teachers v8,dinov2` CLI arg can map cleanly to instances."""
+    so the `--teachers v8,dinov2,medsam` CLI arg can map cleanly to
+    instances."""
     n = name.strip().lower()
     if n == 'v8':
         if v8_ckpt is None:
@@ -198,10 +281,15 @@ def build_teacher(name: str, v8_ckpt: Optional[str] = None,
         return DINOv2FrozenTeacher(device=device)
     if n == 'dinov2-large':
         return DINOv2FrozenTeacher(model_id='facebook/dinov2-large', device=device)
-    raise ValueError(f'unknown teacher name: {name!r}. Known: v8, dinov2, dinov2-large')
+    if n in ('medsam', 'medsam-vit-base'):
+        return MedSAMFrozenTeacher(device=device)
+    raise ValueError(
+        f'unknown teacher name: {name!r}. '
+        f'Known: v8, dinov2, dinov2-large, medsam')
 
 
 __all__ = [
-    'BaseFrozenTeacher', 'V8FrozenTeacher', 'DINOv2FrozenTeacher',
+    'BaseFrozenTeacher',
+    'V8FrozenTeacher', 'DINOv2FrozenTeacher', 'MedSAMFrozenTeacher',
     'V8_EMBED_DIM', 'build_teacher',
 ]

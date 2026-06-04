@@ -68,6 +68,12 @@ SRC_FILES = [
     'src/research/v9c_crossjepa/__init__.py',
     'src/research/v9c_crossjepa/conditioning.py',
     'src/research/v9c_crossjepa/caching.py',
+    'src/research/v9c_crossjepa/teachers.py',   # NEW (commit 0d03515):
+                                                 # BaseFrozenTeacher + V8 + DINOv2
+                                                 # multi-teacher support. v8_teacher.py
+                                                 # is now a back-compat shim that
+                                                 # re-exports from here, so this MUST
+                                                 # ship in the bundle or imports break.
     'src/research/v9c_crossjepa/v8_teacher.py',
     'src/research/v9c_crossjepa/vit_3d.py',
     'src/research/v9c_crossjepa/volume_to_slice.py',

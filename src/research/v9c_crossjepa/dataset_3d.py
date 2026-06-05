@@ -426,32 +426,114 @@ class Mod2ModDataset(IterableDataset):
             }
 
 
+# Cross-modal pair blacklist + weights. The blacklist removes the trivial
+# pair; the weights emphasize the genuinely hard mappings during sampling.
+#
+#   T1 <-> T1c   BLACKLISTED. Near-identity in healthy tissue — gadolinium
+#                 only enhances vasculature and pathology, both filtered
+#                 out by the seg mask. Would degrade the bridge to identity.
+#
+# Weights for the remaining 8 directional pairs:
+#
+#   T1 <-> FLAIR    3.0  Strongest bridge. FLAIR uses inversion recovery
+#   T1c <-> FLAIR   3.0  to suppress CSF *specifically*. The encoder
+#                         cannot learn a pixel-wise intensity remap; it
+#                         must classify "this voxel is CSF" to predict
+#                         the suppression — i.e. tissue identity.
+#
+#   T1 <-> T2       2.0  Strong bridge. Contrast inversion (white
+#   T1c <-> T2      2.0  matter bright in T1, dark in T2) plus tissue
+#                         understanding to anchor it. Encoder must
+#                         model the per-tissue intensity mapping.
+#
+#   T2 <-> FLAIR    1.0  Moderate bridge. Both are T2-weighted; only
+#                         CSF differs (bright in T2, suppressed in
+#                         FLAIR). Sampled less often — easier task.
+DEFAULT_PAIR_BLACKLIST = (('T1', 'T1c'), ('T1c', 'T1'))
+
+DEFAULT_PAIR_WEIGHTS = {
+    ('T1', 'FLAIR'): 3.0,  ('FLAIR', 'T1'): 3.0,
+    ('T1c', 'FLAIR'): 3.0, ('FLAIR', 'T1c'): 3.0,
+    ('T1', 'T2'): 2.0,     ('T2', 'T1'): 2.0,
+    ('T1c', 'T2'): 2.0,    ('T2', 'T1c'): 2.0,
+    ('T2', 'FLAIR'): 1.0,  ('FLAIR', 'T2'): 1.0,
+}
+
+
+# Volumes are stored as (D, H, W) = (axial, coronal, sagittal) after the
+# .transpose(2,1,0) in _load_nifti. Sampling a 2D slice along plane P
+# means indexing axis PLANE_AXIS[P].
+PLANE_AXIS = {'axial': 0, 'coronal': 1, 'sagittal': 2}
+
+
+def _slice_along(vol: np.ndarray, plane: str, idx: int) -> np.ndarray:
+    ax = PLANE_AXIS[plane]
+    if ax == 0:
+        return vol[idx, :, :]
+    if ax == 1:
+        return vol[:, idx, :]
+    return vol[:, :, idx]
+
+
+def _per_plane_tumor_area(seg_mask: np.ndarray, plane: str) -> np.ndarray:
+    """Sum tumor voxels along the two axes ORTHOGONAL to `plane`, giving
+    a 1D array of length vol.shape[PLANE_AXIS[plane]]."""
+    ax = PLANE_AXIS[plane]
+    other_axes = tuple(a for a in (0, 1, 2) if a != ax)
+    return (seg_mask > 0).sum(axis=other_axes)
+
+
 class Vol2SliceCrossModalDataset(IterableDataset):
     """Cross-modal Method 1c training set (BraTS 4-modality).
 
-    This is the *proper* CrossJEPA setup for brain MRI:
-      - Source: 3D volume of one MR sequence A (e.g., T1)
-      - Target: 2D slice of a DIFFERENT MR sequence B at the same
-        anatomical location (B != A)
-      - Real semantic gap (different contrast in T1 vs T1c vs T2 vs
-        FLAIR despite identical anatomy)
-      - Encoder must learn intensity-invariant anatomical features to
-        bridge the modality gap
+    Why this is genuinely CROSS-MODAL, not "narrow cross-sequence":
+
+      The encoder receives a 3D volume of modality A and must predict
+      the embedding of a 2D slice of modality B at a possibly DIFFERENT
+      anatomical orientation (axial / sagittal / coronal). Three things
+      are simultaneously different between input and target:
+
+        1. Dimensionality        (3D volume    -> 2D slice)
+        2. Intensity space       (modality A   -> modality B)
+        3. Spatial orientation   (full volume  -> orthogonal plane)
+
+      The encoder CANNOT pixel-map (orientations differ), CANNOT
+      intensity-copy (modalities differ), and CANNOT use 2D context
+      (input is 3D). The only path to a low loss is to build an
+      intermediate representation that abstracts AWAY from the source
+      modality's intensity statistics and FROM the 3D voxel grid, and
+      towards a tissue-identity-at-spatial-location representation
+      that supports re-decoding into an arbitrary plane in an
+      arbitrary target modality.
+
+      That is structurally analogous to CrossJEPA's 3D-point-cloud
+      -> 2D-image bridge: different dimensionality, different
+      appearance/intensity space, shared underlying object identity
+      (here: the patient's anatomy).
+
+    Pair blacklist + weights (see DEFAULT_PAIR_BLACKLIST,
+    DEFAULT_PAIR_WEIGHTS above):
+      T1<->T1c is excluded — near-identity in healthy tissue would
+      degrade the bridge to trivial identity. The remaining 8 pairs
+      are sampled with weights that emphasize the genuinely HARD
+      mappings: T1<->FLAIR + T1c<->FLAIR (3.0, require tissue
+      classification because FLAIR specifically suppresses CSF) >
+      T1<->T2 + T1c<->T2 (2.0, contrast inversion) > T2<->FLAIR
+      (1.0, only CSF differs).
 
     Per-sample emit:
       volume               : (C, D, H, W) float in [0, 1]  — source modality A
       target_slice_rgb     : (3, H_2d, W_2d) float — target modality B slice
-      plane_idx            : long scalar
+      plane_idx            : long scalar  (0/1/2 = axial/sagittal/coronal)
       slice_idx_norm       : float scalar in [0, 1]
       voxel_spacing        : (3,) float, mm
       source_modality_idx  : long scalar  (0=T1, 1=T1c, 2=T2, 3=FLAIR)
       target_modality_idx  : long scalar  (different from source)
 
-    For normative pretraining we filter to TUMOR-FREE slices using the
-    seg.nii.gz mask. The model learns "what does healthy modality-B
-    anatomy look like, given modality-A volume context". At inference,
-    slices with tumor will fail this prediction (out of training
-    distribution) -> anomaly signal.
+    For normative pretraining we filter to TUMOR-FREE slices via the
+    seg.nii.gz mask, per-plane (a slice is "healthy" iff tumor_area on
+    that plane is 0). At inference, slices containing tumor fail this
+    prediction (out of training distribution) -> anomaly signal.
 
     Use with scan_index produced by `discover_brats_scans()`.
     """
@@ -463,6 +545,9 @@ class Vol2SliceCrossModalDataset(IterableDataset):
                  slice_resize_hw: Tuple[int, int] = (256, 256),
                  require_tumor_free_slice: bool = True,
                  min_healthy_slices: int = 3,
+                 target_planes: Sequence[str] = ('axial', 'sagittal', 'coronal'),
+                 pair_blacklist: Optional[Sequence[Tuple[str, str]]] = None,
+                 pair_weights: Optional[dict] = None,
                  seed: int = 0, shuffle: bool = True,
                  augment: bool = False,
                  aug_intensity_jitter: float = 0.20,
@@ -480,6 +565,15 @@ class Vol2SliceCrossModalDataset(IterableDataset):
         self.slice_resize_hw = tuple(slice_resize_hw)
         self.require_tumor_free_slice = require_tumor_free_slice
         self.min_healthy_slices = min_healthy_slices
+        for p in target_planes:
+            if p not in PLANE_AXIS:
+                raise ValueError(f'target_planes contains unknown plane {p!r}; '
+                                  f'must be one of {list(PLANE_AXIS)}')
+        self.target_planes = tuple(target_planes)
+        bl = DEFAULT_PAIR_BLACKLIST if pair_blacklist is None else pair_blacklist
+        self.pair_blacklist = frozenset((tuple(p) for p in bl))
+        self.pair_weights = (dict(DEFAULT_PAIR_WEIGHTS) if pair_weights is None
+                              else dict(pair_weights))
         self.rng = random.Random(seed)
         self.shuffle = shuffle
         # Augmentation (same as Vol2SliceDataset for consistency)
@@ -545,6 +639,22 @@ class Vol2SliceCrossModalDataset(IterableDataset):
                     seg_mask = None
         return modality_vols, spacing, seg_mask
 
+    def _allowed_pairs(self, present: List[str]) -> List[Tuple[str, str]]:
+        """Pairs (src, tgt) for which: src != tgt, both modalities present
+        in this patient's data, AND not in the blacklist."""
+        return [(s, t) for s in present for t in present
+                 if s != t and (s, t) not in self.pair_blacklist]
+
+    def _sample_pair(self, allowed: List[Tuple[str, str]]) -> Tuple[str, str]:
+        """Weighted sample over the non-blacklisted (src, tgt) pairs.
+        Defaults emphasize the genuinely hard mappings — see
+        DEFAULT_PAIR_WEIGHTS. A pair not in self.pair_weights gets
+        weight 1.0 (uniform fallback)."""
+        if not allowed:
+            raise ValueError('No allowed (src, tgt) pairs after blacklist filtering')
+        weights = [max(float(self.pair_weights.get(p, 1.0)), 1e-9) for p in allowed]
+        return self.rng.choices(allowed, weights=weights, k=1)[0]
+
     def __iter__(self) -> Iterator[dict]:
         scans = list(self.scan_index)
         if self.shuffle:
@@ -554,30 +664,40 @@ class Vol2SliceCrossModalDataset(IterableDataset):
             if len(modality_vols) < 2:
                 continue
             present = list(modality_vols.keys())
-            D = next(iter(modality_vols.values())).shape[0]
-            # Pick healthy-slice indices (axial only for v1; coronal/
-            # sagittal could be added later)
-            lo, hi = int(0.2 * D), int(0.8 * D)
-            if seg_mask is not None:
-                tumor_area = (seg_mask > 0).reshape(D, -1).sum(axis=1)
-                healthy_idx = [int(i) for i in range(lo, hi)
-                                if tumor_area[i] == 0]
-                if len(healthy_idx) < self.min_healthy_slices:
-                    # Patient has tumor on too many slices; skip rather
-                    # than corrupt training with tumor-bearing targets
-                    continue
-            else:
-                healthy_idx = list(range(lo, hi))
+            allowed_pairs = self._allowed_pairs(present)
+            if not allowed_pairs:
+                # All possible pairs for this patient are blacklisted (e.g.
+                # they only have T1 + T1c). Skip — nothing meaningful to learn.
+                continue
+            vol_shape = next(iter(modality_vols.values())).shape  # (D, H, W)
             scan_id = entry.get('scan_id', 'unknown')
 
+            # Pre-compute healthy-index lists per plane (axial, sagittal,
+            # coronal). A target slice is "healthy" iff its tumor area on
+            # the SPECIFIC plane it will be sampled from is 0.
+            healthy_idx_by_plane: dict[str, List[int]] = {}
+            for plane in self.target_planes:
+                N = vol_shape[PLANE_AXIS[plane]]
+                lo, hi = int(0.2 * N), int(0.8 * N)
+                if seg_mask is not None:
+                    tumor = _per_plane_tumor_area(seg_mask, plane)
+                    candidates = [int(i) for i in range(lo, hi) if tumor[i] == 0]
+                else:
+                    candidates = list(range(lo, hi))
+                if len(candidates) >= self.min_healthy_slices:
+                    healthy_idx_by_plane[plane] = candidates
+            if not healthy_idx_by_plane:
+                # Patient is tumor-heavy on every requested plane — skip
+                # rather than contaminate training with tumor-bearing targets.
+                continue
+            allowed_planes = list(healthy_idx_by_plane)
+
             for _ in range(self.pairs_per_volume):
-                # Pick distinct source + target modalities
-                src = self.rng.choice(present)
-                tgt_candidates = [m for m in present if m != src]
-                if not tgt_candidates:
-                    continue
-                tgt = self.rng.choice(tgt_candidates)
-                idx = self.rng.choice(healthy_idx)
+                src, tgt = self._sample_pair(allowed_pairs)
+                plane = self.rng.choice(allowed_planes)
+                idx = self.rng.choice(healthy_idx_by_plane[plane])
+                N_along = vol_shape[PLANE_AXIS[plane]]
+
                 # Apply augmentation to BOTH the source volume and the
                 # target slice consistently (each independently — they
                 # come from different modalities so the augmentation is
@@ -593,7 +713,7 @@ class Vol2SliceCrossModalDataset(IterableDataset):
                         noise_std=self.aug_noise_std,
                         renormalize_pct=self.aug_renormalize_pct,
                     )
-                target_2d = modality_vols[tgt][idx]
+                target_2d = _slice_along(modality_vols[tgt], plane, idx)
                 if self.augment:
                     # 3D->2D aug for the target slice: simpler — just
                     # intensity/contrast jitter, no bias field
@@ -616,9 +736,9 @@ class Vol2SliceCrossModalDataset(IterableDataset):
                     'volume': vol_t,
                     'target_slice_rgb': torch.from_numpy(slice_rgb)
                                               .permute(2, 0, 1).float() / 255.0,
-                    'plane_idx': torch.tensor(PLANE_TO_IDX['axial'],
+                    'plane_idx': torch.tensor(PLANE_TO_IDX[plane],
                                                 dtype=torch.long),
-                    'slice_idx_norm': torch.tensor(idx / max(D - 1, 1),
+                    'slice_idx_norm': torch.tensor(idx / max(N_along - 1, 1),
                                                      dtype=torch.float32),
                     'voxel_spacing': torch.tensor(spacing,
                                                     dtype=torch.float32),
@@ -627,7 +747,7 @@ class Vol2SliceCrossModalDataset(IterableDataset):
                     'target_modality_idx': torch.tensor(MODALITY_TO_IDX[tgt],
                                                           dtype=torch.long),
                     'scan_id': scan_id,
-                    'plane': 'axial', 'slice_idx': int(idx),
+                    'plane': plane, 'slice_idx': int(idx),
                     'source_modality': src, 'target_modality': tgt,
                 }
 

@@ -112,6 +112,56 @@ def main():
                      help='[--mode cross_modal] Number of (source_mod, target_mod, '
                           'slice) training pairs emitted per visited BraTS '
                           'patient. Mirrors --slices_per_volume for single mode.')
+    # --- Deep-bridge controls (cross_modal only) ---
+    #
+    # Three levers that make the task genuinely cross-modal (not just
+    # cross-sequence):
+    #
+    #   --pair_blacklist : T1<->T1c is excluded because in healthy
+    #     tissue (which is what we filter to via the seg mask)
+    #     gadolinium has nothing to highlight — T1 and T1c look
+    #     near-identical, and that pair would degrade the bridge to
+    #     trivial identity.
+    #
+    #   --pair_weights   : the remaining 8 pairs are NOT sampled
+    #     uniformly. The defaults emphasize the genuinely HARD
+    #     mappings — T1<->FLAIR + T1c<->FLAIR get 3.0 (require tissue
+    #     classification because FLAIR specifically suppresses CSF),
+    #     T1<->T2 + T1c<->T2 get 2.0 (contrast inversion), T2<->FLAIR
+    #     gets 1.0 (only CSF differs — easier).
+    #
+    #   --target_planes  : default samples axial, sagittal, AND coronal.
+    #     With multi-plane targets the encoder must build a real 3D
+    #     representation — it cannot pixel-map the source to the target
+    #     because their orientations differ. Combined with cross-modality
+    #     this gives us THREE simultaneous differences between source
+    #     and target (dimensionality 3D->2D, orientation, intensity
+    #     space), structurally analogous to the original CrossJEPA
+    #     point-cloud -> image task.
+    ap.add_argument('--pair_blacklist',
+                     default='T1,T1c;T1c,T1',
+                     help='[--mode cross_modal] Semicolon-separated SRC,TGT '
+                          'pairs to never sample. Default excludes T1<->T1c '
+                          '(near-trivial in healthy tissue). Pass an empty '
+                          'string to disable blacklisting.')
+    ap.add_argument('--pair_weights',
+                     default=('T1,FLAIR,3;FLAIR,T1,3;T1c,FLAIR,3;FLAIR,T1c,3;'
+                              'T1,T2,2;T2,T1,2;T1c,T2,2;T2,T1c,2;'
+                              'T2,FLAIR,1;FLAIR,T2,1'),
+                     help='[--mode cross_modal] Semicolon-separated SRC,TGT,WEIGHT '
+                          'triples. Defaults bias sampling toward the genuinely '
+                          'hard mappings: T1<->FLAIR + T1c<->FLAIR weighted 3x '
+                          '(tissue classification, deepest bridge), T1<->T2 + '
+                          'T1c<->T2 weighted 2x (contrast inversion), T2<->FLAIR '
+                          'weighted 1x (only CSF differs — easier). Pass empty '
+                          'string for uniform sampling.')
+    ap.add_argument('--target_planes', default='axial,sagittal,coronal',
+                     help='[--mode cross_modal] Comma-separated planes to sample '
+                          'targets from. Default = all three. Cross-orientation '
+                          'is the lever that turns this from cross-sequence '
+                          'into truly cross-modal: encoder cannot pixel-map '
+                          'across different orientations, so it must learn a 3D '
+                          'anatomy-tissue representation.')
     # `--teachers` is a comma-sep list of short names. Examples:
     #   --teachers v8
     #   --teachers dinov2
@@ -165,11 +215,42 @@ def main():
                       f'returned 0 patients; check the directory layout.')
         log(f'[init] {len(scan_index)} BraTS patients discovered '
             f'(>=2 modalities each)')
+        # Parse deep-bridge config
+        blacklist = []
+        for chunk in args.pair_blacklist.split(';'):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            parts = [p.strip() for p in chunk.split(',')]
+            if len(parts) != 2:
+                sys.exit(f'ERROR: --pair_blacklist chunk {chunk!r} must be '
+                          f'"SRC,TGT" (got {len(parts)} fields)')
+            blacklist.append((parts[0], parts[1]))
+        weights = {}
+        for chunk in args.pair_weights.split(';'):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            parts = [p.strip() for p in chunk.split(',')]
+            if len(parts) != 3:
+                sys.exit(f'ERROR: --pair_weights chunk {chunk!r} must be '
+                          f'"SRC,TGT,WEIGHT" (got {len(parts)} fields)')
+            weights[(parts[0], parts[1])] = float(parts[2])
+        target_planes = [p.strip() for p in args.target_planes.split(',')
+                          if p.strip()]
+        log(f'[init] cross_modal pair_blacklist = {blacklist}')
+        log(f'[init] cross_modal pair_weights   = '
+            + (', '.join(f'{s}->{t}:{w}' for (s, t), w in weights.items())
+               if weights else 'uniform'))
+        log(f'[init] cross_modal target_planes  = {target_planes}')
         ds = Vol2SliceCrossModalDataset(
             scan_index=scan_index,
             volume_size=tuple(args.volume_size),
             in_channels=args.in_channels,
             pairs_per_volume=args.pairs_per_volume,
+            target_planes=tuple(target_planes),
+            pair_blacklist=blacklist,
+            pair_weights=weights or None,
             shuffle=True,
             augment=args.augment,
             aug_intensity_jitter=args.aug_intensity_jitter,

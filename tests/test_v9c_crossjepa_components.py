@@ -665,5 +665,165 @@ def test_vol2slice_crossmodal_anomaly_score_shape():
     assert s.shape == (B,) and torch.all(s >= 0)
 
 
+# ---------------------------------------------------------------------------
+# Deep-bridge dataset tests (Vol2SliceCrossModalDataset)
+#
+# These verify the bridge-quality controls — blacklist excludes near-
+# trivial pairs (T1<->T1c is identity in healthy tissue), pair_weights
+# biases sampling toward the strongest bridges (T1<->FLAIR requires
+# tissue classification because FLAIR suppresses CSF), and multi-plane
+# target sampling forces a real 3D representation.
+# ---------------------------------------------------------------------------
+
+from src.research.v9c_crossjepa.dataset_3d import (
+    Vol2SliceCrossModalDataset, DEFAULT_PAIR_BLACKLIST,
+    DEFAULT_PAIR_WEIGHTS, PLANE_AXIS,
+)
+
+
+def _fake_brats_patient(tmp_path, pid='BraTS2021_99999', modalities=None,
+                        seg_post_transpose=None):
+    """Write a fake BraTS patient dir (4-modality co-registered NIfTIs +
+    optional seg). `seg_post_transpose`, if provided, is the desired seg
+    array in (D, H, W) post-transpose layout — we save it pre-transposed
+    so that `_load_nifti`'s `transpose(2, 1, 0)` yields exactly this
+    layout. Returns the scan_index entry that discover_brats_scans
+    would produce."""
+    import nibabel as nib
+    modalities = modalities or ('T1', 'T1c', 'T2', 'FLAIR')
+    suf = {'T1': '_t1', 'T1c': '_t1ce', 'T2': '_t2', 'FLAIR': '_flair'}
+    pdir = tmp_path / pid
+    pdir.mkdir()
+    affine = np.eye(4)
+    entry = {'scan_id': pid}
+    for m in modalities:
+        # Distinct intensity per modality so we can verify the right one
+        # was loaded for source vs target.
+        arr = (np.ones((40, 40, 40), dtype=np.float32)
+                * (0.1 + 0.2 * ('T1 T1c T2 FLAIR'.split().index(m))))
+        nib.save(nib.Nifti1Image(arr, affine),
+                  str(pdir / f'{pid}{suf[m]}.nii.gz'))
+        entry[m] = str(pdir / f'{pid}{suf[m]}.nii.gz')
+    if seg_post_transpose is None:
+        seg_post_transpose = np.zeros((40, 40, 40), dtype=np.uint8)
+    # _load_nifti transposes (2,1,0), so we save the inverse transpose so
+    # the loader produces `seg_post_transpose` directly.
+    seg_to_save = np.asarray(seg_post_transpose, dtype=np.uint8) \
+                    .transpose(2, 1, 0)
+    nib.save(nib.Nifti1Image(seg_to_save, affine),
+              str(pdir / f'{pid}_seg.nii.gz'))
+    return entry
+
+
+def test_default_blacklist_excludes_t1_t1c(tmp_path):
+    """The dataset must NEVER yield a (T1, T1c) or (T1c, T1) pair under
+    default settings — that pair is near-identity in healthy tissue and
+    would degrade the bridge to trivial intensity mapping."""
+    entry = _fake_brats_patient(tmp_path)
+    ds = Vol2SliceCrossModalDataset(
+        scan_index=[entry], volume_size=(40, 40, 40),
+        pairs_per_volume=200, shuffle=False, seed=0,
+    )
+    pairs_seen = set()
+    for sample in ds:
+        pairs_seen.add((sample['source_modality'], sample['target_modality']))
+    assert ('T1', 'T1c') not in pairs_seen, (
+        'Default blacklist failed — saw (T1, T1c) pair in samples')
+    assert ('T1c', 'T1') not in pairs_seen, (
+        'Default blacklist failed — saw (T1c, T1) pair in samples')
+    # Sanity: we did see some other pairs
+    assert len(pairs_seen) >= 4
+
+
+def test_pair_weights_bias_sampling(tmp_path):
+    """The deep-bridge weights should produce a sampling distribution
+    where T1<->FLAIR appears more often than T2<->FLAIR (3x weight)."""
+    entry = _fake_brats_patient(tmp_path)
+    ds = Vol2SliceCrossModalDataset(
+        scan_index=[entry], volume_size=(40, 40, 40),
+        pairs_per_volume=1000, shuffle=False, seed=0,
+    )
+    counts = {}
+    for sample in ds:
+        k = (sample['source_modality'], sample['target_modality'])
+        counts[k] = counts.get(k, 0) + 1
+    # T1<->FLAIR weighted 3x vs T2<->FLAIR weighted 1x — should see
+    # noticeably more of the former
+    t1_flair = counts.get(('T1', 'FLAIR'), 0) + counts.get(('FLAIR', 'T1'), 0)
+    t2_flair = counts.get(('T2', 'FLAIR'), 0) + counts.get(('FLAIR', 'T2'), 0)
+    assert t1_flair > 1.5 * t2_flair, (
+        f'Deep-bridge weights not biasing sampling — T1<->FLAIR={t1_flair} vs '
+        f'T2<->FLAIR={t2_flair} (expected T1<->FLAIR > 1.5x T2<->FLAIR).')
+
+
+def test_multi_plane_targets_emitted(tmp_path):
+    """Default target_planes is all 3 — dataset should emit samples from
+    each of axial/sagittal/coronal."""
+    entry = _fake_brats_patient(tmp_path)
+    ds = Vol2SliceCrossModalDataset(
+        scan_index=[entry], volume_size=(40, 40, 40),
+        pairs_per_volume=300, shuffle=False, seed=0,
+    )
+    planes_seen = {sample['plane'] for sample in ds}
+    assert planes_seen == {'axial', 'sagittal', 'coronal'}, (
+        f'Expected samples from all 3 planes, got {planes_seen}')
+
+
+def test_target_planes_axial_only_no_other_planes(tmp_path):
+    """If user restricts to axial, dataset must never sample other planes."""
+    entry = _fake_brats_patient(tmp_path)
+    ds = Vol2SliceCrossModalDataset(
+        scan_index=[entry], volume_size=(40, 40, 40),
+        pairs_per_volume=50, target_planes=('axial',),
+        shuffle=False, seed=0,
+    )
+    planes_seen = {sample['plane'] for sample in ds}
+    assert planes_seen == {'axial'}, (
+        f'target_planes=(axial,) but sampled {planes_seen}')
+
+
+def test_per_plane_tumor_filter(tmp_path):
+    """A patient with tumor on every axial slice but clear coronal
+    slices must still produce samples — just none from axial."""
+    # Build seg in (D, H, W) post-transpose layout. Tumor at H=20 on a
+    # plane that spans the entire (D, W) extent -> every axial slice
+    # (axis 0) AND every sagittal slice (axis 2) hits the tumor plane,
+    # but coronal slices (axis 1) at H != 20 are tumor-free.
+    seg = np.zeros((40, 40, 40), dtype=np.uint8)
+    seg[:, 20, :] = 1
+    entry = _fake_brats_patient(tmp_path, seg_post_transpose=seg)
+    ds = Vol2SliceCrossModalDataset(
+        scan_index=[entry], volume_size=(40, 40, 40),
+        pairs_per_volume=30, shuffle=False, seed=0,
+    )
+    samples = list(ds)
+    assert len(samples) > 0, (
+        'Patient has clear coronal slices but dataset emitted 0 samples')
+    planes_seen = {s['plane'] for s in samples}
+    assert 'axial' not in planes_seen, (
+        f'Per-plane tumor filter broken: axial samples emitted despite '
+        f'tumor on every axial slice. planes_seen={planes_seen}')
+    assert 'sagittal' not in planes_seen, (
+        f'Per-plane tumor filter broken: sagittal samples emitted despite '
+        f'tumor on every sagittal slice. planes_seen={planes_seen}')
+    assert 'coronal' in planes_seen, (
+        f'Coronal samples should be present (most coronal slices are '
+        f'tumor-free) but planes_seen={planes_seen}')
+
+
+def test_default_constants_sanity():
+    """Guard the design-intent constants — if someone changes the
+    defaults, this test forces a conscious decision."""
+    assert ('T1', 'T1c') in DEFAULT_PAIR_BLACKLIST
+    assert ('T1c', 'T1') in DEFAULT_PAIR_BLACKLIST
+    # T1<->FLAIR must be the highest-weighted bridge
+    assert DEFAULT_PAIR_WEIGHTS[('T1', 'FLAIR')] >= \
+        DEFAULT_PAIR_WEIGHTS[('T1', 'T2')]
+    assert DEFAULT_PAIR_WEIGHTS[('T1', 'FLAIR')] > \
+        DEFAULT_PAIR_WEIGHTS[('T2', 'FLAIR')]
+    # All 3 anatomical planes mapped to distinct axes 0/1/2
+    assert sorted(PLANE_AXIS.values()) == [0, 1, 2]
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-xvs'])

@@ -545,5 +545,125 @@ def test_vol2slice_multi_with_three_teachers():
     out_c['loss'].backward()
 
 
+# ---------------------------------------------------------------------------
+# Cross-modal Method 1c tests
+#
+# These check the TWO architectural fixes that distinguish Method 1c
+# from the original Method 1:
+#   1. Method1CrossModalConditioning has NO intensity_hist field — its
+#      forward() must reject the old call signature and accept the new
+#      (plane, slice, spacing, source_mod, target_mod) signature.
+#   2. Vol2SliceCrossModalModel must produce gradients into the encoder
+#      and never let the frozen teacher receive a backward signal.
+# ---------------------------------------------------------------------------
+
+from src.research.v9c_crossjepa.conditioning import (
+    Method1CrossModalConditioning,
+)
+from src.research.v9c_crossjepa.volume_to_slice import (
+    Vol2SliceCrossModalModel,
+)
+
+
+def test_method1c_conditioning_no_intensity_hist():
+    """The leak-free conditioning must NOT accept intensity_hist."""
+    cond = Method1CrossModalConditioning(embed_dim=192)
+    B = 4
+    plane = torch.zeros(B, dtype=torch.long)
+    slc = torch.rand(B)
+    sp = torch.ones(B, 3)
+    src = torch.zeros(B, dtype=torch.long)
+    tgt = torch.ones(B, dtype=torch.long)
+    out = cond(plane, slc, sp, src, tgt)
+    assert out.shape == (B, 192)
+    # Make sure the module DOES NOT expose an intensity-histogram embedder
+    # — that would be the leak path.
+    assert not hasattr(cond, 'hist'), (
+        'Method1CrossModalConditioning still has a `hist` embedder — the '
+        'intensity-hist leak that this class was created to remove.')
+
+
+def test_method1c_conditioning_source_target_distinct():
+    """Swapping source/target modality ids must change the conditioning
+    output — otherwise the predictor cannot tell which direction it's
+    predicting."""
+    cond = Method1CrossModalConditioning(embed_dim=192)
+    B = 2
+    plane = torch.zeros(B, dtype=torch.long)
+    slc = torch.zeros(B)
+    sp = torch.ones(B, 3)
+    out_ab = cond(plane, slc, sp,
+                   torch.tensor([0, 0]), torch.tensor([1, 1]))
+    out_ba = cond(plane, slc, sp,
+                   torch.tensor([1, 1]), torch.tensor([0, 0]))
+    assert not torch.allclose(out_ab, out_ba), (
+        'Swapping source/target modality_idx produced identical conditioning '
+        '— predictor cannot disambiguate the cross-modal direction.')
+
+
+def test_vol2slice_crossmodal_forward_and_grad():
+    teacher = _TinyFrozenTeacher(embed_dim=768, image_size=64)
+    model = Vol2SliceCrossModalModel(
+        teacher=teacher,
+        volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+        encoder_dim=384, encoder_depth=2, encoder_heads=6,
+        predictor_dim=192, predictor_depth=2,
+    )
+    B = 2
+    batch = {
+        'volume': torch.randn(B, 1, 32, 64, 64),
+        'target_slice_rgb': torch.rand(B, 3, 64, 64),
+        'plane_idx': torch.zeros(B, dtype=torch.long),
+        'slice_idx_norm': torch.rand(B),
+        'voxel_spacing': torch.ones(B, 3),
+        'source_modality_idx': torch.tensor([0, 2], dtype=torch.long),  # T1, T2
+        'target_modality_idx': torch.tensor([1, 3], dtype=torch.long),  # T1c, FLAIR
+    }
+    out = model.training_step(batch)
+    assert out['loss'].requires_grad
+    out['loss'].backward()
+    # Gradient must reach the 3D encoder (the only way the conditioning
+    # gradient sink can carry signal through the cross-modal split).
+    grads = [p.grad for p in model.encoder.parameters() if p.grad is not None]
+    assert any(g.abs().sum() > 0 for g in grads), (
+        'No gradient reached the 3D encoder in cross-modal training_step.')
+
+
+def test_vol2slice_crossmodal_teacher_frozen():
+    teacher = _TinyFrozenTeacher(embed_dim=768, image_size=64)
+    model = Vol2SliceCrossModalModel(
+        teacher=teacher,
+        volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+        encoder_dim=384, encoder_depth=2, encoder_heads=6,
+        predictor_dim=192, predictor_depth=2,
+    )
+    train_ids = {id(p) for p in model.parameters()}
+    for p in teacher.parameters():
+        assert id(p) not in train_ids, (
+            'Cross-modal model leaks teacher params into .parameters()')
+        assert not p.requires_grad
+
+
+def test_vol2slice_crossmodal_anomaly_score_shape():
+    teacher = _TinyFrozenTeacher(embed_dim=768, image_size=64)
+    model = Vol2SliceCrossModalModel(
+        teacher=teacher,
+        volume_size=(32, 64, 64), in_chans=1, patch_size=16,
+        encoder_dim=384, encoder_depth=2, encoder_heads=6,
+        predictor_dim=192, predictor_depth=2,
+    )
+    B = 3
+    s = model.anomaly_score(
+        torch.randn(B, 1, 32, 64, 64),
+        torch.rand(B, 3, 64, 64),
+        torch.zeros(B, dtype=torch.long),
+        torch.rand(B),
+        torch.ones(B, 3),
+        torch.zeros(B, dtype=torch.long),
+        torch.ones(B, dtype=torch.long),
+    )
+    assert s.shape == (B,) and torch.all(s >= 0)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-xvs'])

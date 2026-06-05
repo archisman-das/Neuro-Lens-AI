@@ -484,10 +484,86 @@ class Vol2SliceModelMulti(nn.Module):
         return agg / self.n_teachers
 
 
+from .conditioning import Method1CrossModalConditioning
+
+
+class Vol2SliceCrossModalModel(nn.Module):
+    """End-to-end CROSS-MODAL Method 1c model. Mirrors Vol2SliceModel but
+    uses Method1CrossModalConditioning (no intensity-hist leak) and
+    trains on (source_modality_volume -> target_modality_slice) pairs.
+
+    This is the CrossJEPA-correct setup for brain MRI:
+      - Source = 3D volume of modality A (e.g. T1)
+      - Target = 2D slice of modality B (e.g. T1c) at the same
+        anatomical position
+      - The semantic gap (T1 vs T1c contrast) is what the encoder must
+        bridge by learning intensity-invariant anatomy
+      - Conditioning carries ONLY position + modality identity, NEVER
+        the answer (target's histogram)
+    """
+
+    def __init__(self, teacher: BaseFrozenTeacher,
+                 volume_size: Sequence[int] = (144, 192, 192),
+                 in_chans: int = 1, patch_size: int = 16,
+                 encoder_dim: int = 384, encoder_depth: int = 12,
+                 encoder_heads: int = 6,
+                 predictor_dim: int = 192, predictor_depth: int = 6):
+        super().__init__()
+        self.encoder = ViT3DEncoder(volume_size=volume_size,
+                                      patch_size=patch_size, in_chans=in_chans,
+                                      embed_dim=encoder_dim, depth=encoder_depth,
+                                      heads=encoder_heads)
+        self.conditioning = Method1CrossModalConditioning(
+            embed_dim=predictor_dim)
+        self.predictor = SliceEmbeddingPredictor(
+            encoder_dim=encoder_dim, predictor_dim=predictor_dim,
+            depth=predictor_depth, heads=encoder_heads,
+            conditioning_dim=predictor_dim, out_dim=teacher.embed_dim,
+        )
+        object.__setattr__(self, '_teacher', teacher)
+
+    @property
+    def teacher(self) -> BaseFrozenTeacher:
+        return self._teacher
+
+    def forward_predict(self, volume: torch.Tensor, plane_idx: torch.Tensor,
+                          slice_idx_norm: torch.Tensor,
+                          voxel_spacing: torch.Tensor,
+                          source_modality_idx: torch.Tensor,
+                          target_modality_idx: torch.Tensor) -> torch.Tensor:
+        tokens = self.encoder(volume)
+        cond = self.conditioning(plane_idx, slice_idx_norm, voxel_spacing,
+                                  source_modality_idx, target_modality_idx)
+        return self.predictor(tokens, cond)
+
+    def training_step(self, batch: dict) -> dict:
+        pred = self.forward_predict(
+            batch['volume'], batch['plane_idx'], batch['slice_idx_norm'],
+            batch['voxel_spacing'],
+            batch['source_modality_idx'], batch['target_modality_idx'])
+        with torch.no_grad():
+            target = self.teacher.embed_batch(batch['target_slice_rgb'])
+        loss = F.smooth_l1_loss(pred, target)
+        with torch.no_grad():
+            cos = F.cosine_similarity(pred, target, dim=-1).mean()
+        return {'loss': loss, 'cos_sim': cos.detach()}
+
+    @torch.no_grad()
+    def anomaly_score(self, volume: torch.Tensor,
+                       target_slice_rgb: torch.Tensor,
+                       plane_idx: torch.Tensor, slice_idx_norm: torch.Tensor,
+                       voxel_spacing: torch.Tensor,
+                       source_modality_idx: torch.Tensor,
+                       target_modality_idx: torch.Tensor) -> torch.Tensor:
+        pred = self.forward_predict(volume, plane_idx, slice_idx_norm,
+                                      voxel_spacing,
+                                      source_modality_idx, target_modality_idx)
+        target = self.teacher.embed_batch(target_slice_rgb)
+        return (pred - target).pow(2).mean(dim=-1)
+
+
 __all__ = [
     'SliceEmbeddingPredictor', 'Vol2SliceModel',
     'MultiHeadSliceEmbeddingPredictor', 'TeacherIdConditionedPredictor',
-    'Vol2SliceModelMulti',
+    'Vol2SliceModelMulti', 'Vol2SliceCrossModalModel',
 ]
-
-__all__ = ['SliceEmbeddingPredictor', 'Vol2SliceModel']

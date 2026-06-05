@@ -426,6 +426,223 @@ class Mod2ModDataset(IterableDataset):
             }
 
 
+class Vol2SliceCrossModalDataset(IterableDataset):
+    """Cross-modal Method 1c training set (BraTS 4-modality).
+
+    This is the *proper* CrossJEPA setup for brain MRI:
+      - Source: 3D volume of one MR sequence A (e.g., T1)
+      - Target: 2D slice of a DIFFERENT MR sequence B at the same
+        anatomical location (B != A)
+      - Real semantic gap (different contrast in T1 vs T1c vs T2 vs
+        FLAIR despite identical anatomy)
+      - Encoder must learn intensity-invariant anatomical features to
+        bridge the modality gap
+
+    Per-sample emit:
+      volume               : (C, D, H, W) float in [0, 1]  — source modality A
+      target_slice_rgb     : (3, H_2d, W_2d) float — target modality B slice
+      plane_idx            : long scalar
+      slice_idx_norm       : float scalar in [0, 1]
+      voxel_spacing        : (3,) float, mm
+      source_modality_idx  : long scalar  (0=T1, 1=T1c, 2=T2, 3=FLAIR)
+      target_modality_idx  : long scalar  (different from source)
+
+    For normative pretraining we filter to TUMOR-FREE slices using the
+    seg.nii.gz mask. The model learns "what does healthy modality-B
+    anatomy look like, given modality-A volume context". At inference,
+    slices with tumor will fail this prediction (out of training
+    distribution) -> anomaly signal.
+
+    Use with scan_index produced by `discover_brats_scans()`.
+    """
+
+    def __init__(self, scan_index: List[dict], image_size: int = 256,
+                 volume_size: Tuple[int, int, int] = (144, 192, 192),
+                 in_channels: int = 1,
+                 pairs_per_volume: int = 6,
+                 slice_resize_hw: Tuple[int, int] = (256, 256),
+                 require_tumor_free_slice: bool = True,
+                 min_healthy_slices: int = 3,
+                 seed: int = 0, shuffle: bool = True,
+                 augment: bool = False,
+                 aug_intensity_jitter: float = 0.20,
+                 aug_contrast_jitter: float = 0.30,
+                 aug_gamma_jitter: float = 0.30,
+                 aug_bias_field_strength: float = 0.15,
+                 aug_noise_std: float = 0.02,
+                 aug_renormalize_pct: float = 0.5):
+        super().__init__()
+        self.scan_index = list(scan_index)
+        self.image_size = image_size
+        self.volume_size = volume_size
+        self.in_channels = in_channels
+        self.pairs_per_volume = pairs_per_volume
+        self.slice_resize_hw = tuple(slice_resize_hw)
+        self.require_tumor_free_slice = require_tumor_free_slice
+        self.min_healthy_slices = min_healthy_slices
+        self.rng = random.Random(seed)
+        self.shuffle = shuffle
+        # Augmentation (same as Vol2SliceDataset for consistency)
+        self.augment = augment
+        self.aug_intensity_jitter = aug_intensity_jitter
+        self.aug_contrast_jitter = aug_contrast_jitter
+        self.aug_gamma_jitter = aug_gamma_jitter
+        self.aug_bias_field_strength = aug_bias_field_strength
+        self.aug_noise_std = aug_noise_std
+        self.aug_renormalize_pct = aug_renormalize_pct
+
+    @staticmethod
+    def _find_seg_path(scan_entry: dict) -> Optional[str]:
+        """Find the segmentation file by looking for it next to any of
+        the modality files. scan_entry has paths like 'T1', 'T1c', etc."""
+        for k, p in scan_entry.items():
+            if k not in MODALITIES:
+                continue
+            # BraTS-2020/2021: <pid>_seg.nii.gz
+            # BraTS-2023:      <pid>-seg.nii.gz
+            for suffix in ('_seg.nii.gz', '-seg.nii.gz'):
+                cand = Path(p).parent / (Path(p).parent.name + suffix)
+                if cand.exists():
+                    return str(cand)
+            # Fall back to glob
+            for cand in Path(p).parent.iterdir():
+                if cand.name.lower().endswith(('_seg.nii.gz', '-seg.nii.gz')):
+                    return str(cand)
+        return None
+
+    def _load_4mod(self, scan_entry: dict):
+        """Load all 4 modalities of a BraTS patient + the seg mask if
+        require_tumor_free_slice is True. All co-registered, so the same
+        slice_idx maps to the same anatomy across modalities."""
+        modality_vols = {}
+        spacing = None
+        for m in MODALITIES:
+            p = scan_entry.get(m)
+            if p is None:
+                continue
+            try:
+                vol, sp = _load_nifti(p)
+            except Exception:
+                continue
+            vol = _robust_normalize(vol)
+            vol = _crop_or_pad_volume(vol, self.volume_size)
+            modality_vols[m] = vol
+            if spacing is None:
+                spacing = sp
+        seg_mask = None
+        if self.require_tumor_free_slice:
+            seg_path = self._find_seg_path(scan_entry)
+            if seg_path is not None:
+                try:
+                    import nibabel as nib   # type: ignore
+                    seg = np.asarray(nib.load(seg_path).dataobj, dtype=np.uint8)
+                    if seg.ndim == 3:
+                        seg = seg.transpose(2, 1, 0)
+                    seg = _crop_or_pad_volume(seg.astype(np.float32),
+                                               self.volume_size)
+                    seg_mask = (seg > 0).astype(np.uint8)
+                except Exception:
+                    seg_mask = None
+        return modality_vols, spacing, seg_mask
+
+    def __iter__(self) -> Iterator[dict]:
+        scans = list(self.scan_index)
+        if self.shuffle:
+            self.rng.shuffle(scans)
+        for entry in scans:
+            modality_vols, spacing, seg_mask = self._load_4mod(entry)
+            if len(modality_vols) < 2:
+                continue
+            present = list(modality_vols.keys())
+            D = next(iter(modality_vols.values())).shape[0]
+            # Pick healthy-slice indices (axial only for v1; coronal/
+            # sagittal could be added later)
+            lo, hi = int(0.2 * D), int(0.8 * D)
+            if seg_mask is not None:
+                tumor_area = (seg_mask > 0).reshape(D, -1).sum(axis=1)
+                healthy_idx = [int(i) for i in range(lo, hi)
+                                if tumor_area[i] == 0]
+                if len(healthy_idx) < self.min_healthy_slices:
+                    # Patient has tumor on too many slices; skip rather
+                    # than corrupt training with tumor-bearing targets
+                    continue
+            else:
+                healthy_idx = list(range(lo, hi))
+            scan_id = entry.get('scan_id', 'unknown')
+
+            for _ in range(self.pairs_per_volume):
+                # Pick distinct source + target modalities
+                src = self.rng.choice(present)
+                tgt_candidates = [m for m in present if m != src]
+                if not tgt_candidates:
+                    continue
+                tgt = self.rng.choice(tgt_candidates)
+                idx = self.rng.choice(healthy_idx)
+                # Apply augmentation to BOTH the source volume and the
+                # target slice consistently (each independently — they
+                # come from different modalities so the augmentation is
+                # not literally shared, but the joint distribution shifts).
+                vol_arr = modality_vols[src]
+                if self.augment:
+                    vol_arr = _apply_intensity_aug(
+                        vol_arr, self.rng,
+                        intensity_jitter=self.aug_intensity_jitter,
+                        contrast_jitter=self.aug_contrast_jitter,
+                        gamma_jitter=self.aug_gamma_jitter,
+                        bias_field_strength=self.aug_bias_field_strength,
+                        noise_std=self.aug_noise_std,
+                        renormalize_pct=self.aug_renormalize_pct,
+                    )
+                target_2d = modality_vols[tgt][idx]
+                if self.augment:
+                    # 3D->2D aug for the target slice: simpler — just
+                    # intensity/contrast jitter, no bias field
+                    if self.rng.random() < 0.7:
+                        target_2d = target_2d + self.rng.uniform(
+                            -self.aug_intensity_jitter,
+                            self.aug_intensity_jitter)
+                    if self.rng.random() < 0.7:
+                        target_2d = ((target_2d - 0.5)
+                                      * self.rng.uniform(1.0 - self.aug_contrast_jitter,
+                                                          1.0 + self.aug_contrast_jitter)
+                                      + 0.5)
+                    target_2d = target_2d.clip(0.0, 1.0).astype(np.float32)
+                slice_rgb = _slice_to_rgb_uint8(target_2d,
+                                                  target_hw=self.slice_resize_hw)
+                vol_t = torch.from_numpy(vol_arr).unsqueeze(0)
+                if self.in_channels > 1:
+                    vol_t = vol_t.expand(self.in_channels, -1, -1, -1).contiguous()
+                yield {
+                    'volume': vol_t,
+                    'target_slice_rgb': torch.from_numpy(slice_rgb)
+                                              .permute(2, 0, 1).float() / 255.0,
+                    'plane_idx': torch.tensor(PLANE_TO_IDX['axial'],
+                                                dtype=torch.long),
+                    'slice_idx_norm': torch.tensor(idx / max(D - 1, 1),
+                                                     dtype=torch.float32),
+                    'voxel_spacing': torch.tensor(spacing,
+                                                    dtype=torch.float32),
+                    'source_modality_idx': torch.tensor(MODALITY_TO_IDX[src],
+                                                          dtype=torch.long),
+                    'target_modality_idx': torch.tensor(MODALITY_TO_IDX[tgt],
+                                                          dtype=torch.long),
+                    'scan_id': scan_id,
+                    'plane': 'axial', 'slice_idx': int(idx),
+                    'source_modality': src, 'target_modality': tgt,
+                }
+
+
+def collate_vol2slice_crossmodal(samples: List[dict]) -> dict:
+    """Standard collate for the cross-modal dataset."""
+    keys = ('volume', 'target_slice_rgb', 'plane_idx', 'slice_idx_norm',
+            'voxel_spacing', 'source_modality_idx', 'target_modality_idx')
+    out = {k: torch.stack([s[k] for s in samples], dim=0) for k in keys}
+    out['scan_ids'] = [s['scan_id'] for s in samples]
+    out['source_modalities'] = [s['source_modality'] for s in samples]
+    out['target_modalities'] = [s['target_modality'] for s in samples]
+    return out
+
+
 def collate_mod2mod(samples: List[dict]) -> Optional[dict]:
     """Collate function that groups samples by target modality so the
     per-modality teacher is called exactly once per batch. If samples

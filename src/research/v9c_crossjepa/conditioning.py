@@ -184,6 +184,61 @@ class Method1Conditioning(nn.Module):
         return self.proj(torch.cat(parts, dim=-1))
 
 
+class Method1CrossModalConditioning(nn.Module):
+    """LEAK-FREE conditioning for cross-modal Method 1 (3D-of-source-modality
+    -> 2D-slice-of-target-modality).
+
+    Fixes two CrossJEPA-correctness issues vs Method1Conditioning:
+
+      Issue 1 (intensity-hist leak): the old conditioning included the
+        TARGET slice's intensity histogram, which gave the predictor
+        almost the answer (~"the answer looks like X intensities").
+        This conditioning omits intensity_hist entirely. The predictor
+        gets only position/identity information, NOT content.
+
+      Issue 2 (real cross-modal gap): adds source_modality_idx and
+        target_modality_idx as true nuisances. Encoder is given a T1
+        volume; predictor knows "I'm trying to predict the T1c
+        appearance of slice 87". The cross-modal gap (T1 vs T1c
+        contrast) is what the encoder must bridge by learning
+        intensity-invariant anatomical features.
+
+    Inputs (all batched):
+      plane_idx           (B,)   long, 0..2  (axial/sagittal/coronal)
+      slice_idx_norm      (B,)   float in [0, 1]
+      voxel_spacing       (B, 3) float in mm
+      source_modality_idx (B,)   long, 0..3  (the volume's modality)
+      target_modality_idx (B,)   long, 0..3  (the slice's modality)
+
+    Output: (B, embed_dim) — added to predictor's query token (gradient
+    sink, exactly as CrossJEPA prescribes).
+    """
+
+    def __init__(self, embed_dim: int = 192):
+        super().__init__()
+        self.plane = PlaneEmbedding(dim=32)
+        self.slice = ContinuousEmbedding(dim=32, max_value=1.0)
+        self.spacing = VoxelSpacingEmbedding(dim_per_axis=16)
+        self.source_modality = ModalityEmbedding(dim=32)
+        self.target_modality = ModalityEmbedding(dim=32)
+        in_dim = 32 + 32 + self.spacing.out_dim + 32 + 32
+        self.proj = nn.Linear(in_dim, embed_dim)
+        self.out_dim = embed_dim
+
+    def forward(self, plane_idx: torch.Tensor, slice_idx_norm: torch.Tensor,
+                voxel_spacing: torch.Tensor,
+                source_modality_idx: torch.Tensor,
+                target_modality_idx: torch.Tensor) -> torch.Tensor:
+        parts = [
+            self.plane(plane_idx),
+            self.slice(slice_idx_norm),
+            self.spacing(voxel_spacing),
+            self.source_modality(source_modality_idx),
+            self.target_modality(target_modality_idx),
+        ]
+        return self.proj(torch.cat(parts, dim=-1))
+
+
 class Method2Conditioning(nn.Module):
     """Combined conditioning vector for Method 2 (modality->modality).
 
@@ -224,5 +279,6 @@ __all__ = [
     'PLANES', 'MODALITIES', 'PLANE_TO_IDX', 'MODALITY_TO_IDX',
     'PlaneEmbedding', 'ModalityEmbedding', 'ContinuousEmbedding',
     'VoxelSpacingEmbedding', 'IntensityHistogramEmbedding',
-    'Method1Conditioning', 'Method2Conditioning',
+    'Method1Conditioning', 'Method1CrossModalConditioning',
+    'Method2Conditioning',
 ]

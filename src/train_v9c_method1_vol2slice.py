@@ -52,8 +52,10 @@ def _collate(batch):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--scans_glob', required=True,
-                     help='Glob pattern for .nii.gz volumes (BraTS, LGG, etc.)')
+    ap.add_argument('--scans_glob', default='',
+                     help='Glob pattern for .nii.gz volumes (BraTS, LGG, etc.). '
+                          'Required for --mode single/dual_heads/teacher_id; '
+                          'ignored for --mode cross_modal (use --brats_root).')
     ap.add_argument('--v8_ckpt', default='model/best_micro.pt',
                      help='Frozen v8 UNet checkpoint (encoder is peeled off)')
     ap.add_argument('--output_dir', default='v9c_artifacts/crossjepa_method1')
@@ -262,6 +264,10 @@ def main():
         )
         collate_fn = collate_vol2slice_crossmodal
     else:
+        if not args.scans_glob:
+            sys.exit(f'ERROR: --mode {args.mode} requires --scans_glob '
+                      f'(use --mode cross_modal + --brats_root for the '
+                      f'cross-modal BraTS setup)')
         # IMPORTANT: pass recursive=True so '**' in the glob actually expands
         # recursively. The v2 data bundle nests files at varying depths:
         #   healthy/ixi/IXI*.nii.gz                            (depth 2)
